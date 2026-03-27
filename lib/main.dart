@@ -1,16 +1,23 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'services/api_service.dart';
+import 'services/fcm_service.dart';
+import 'helpers/device_helper.dart';
 
-const String _kPrefixPais = '503';
-const String _kDefaultCelularServidor = '63092051';
-const String _kDefaultNombreEmpresa   = 'EMPRESA DE PRUEBA';
-const String _kDefaultNumRegistro     = '';
-const String _kDefaultNombreServidor  = 'SIGA1';
+// ─── Constantes de configuración ──────────────────────────────────────────────
+const String _kDefaultBackendUrl    = 'http://10.0.2.2:8000';
+const String _kDefaultNombreEmpresa = 'EMPRESA DE PRUEBA';
+const String _kDefaultNumRegistro   = '';
+const String _kDefaultNombreServidor= 'SIGA1';
+const String _kDefaultCelularDest   = '63092051';
+const String _kDefaultNombreUsuario = 'OPERADOR';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
   runApp(const AppClientes());
 }
 
@@ -21,8 +28,8 @@ class Contacto {
   final String registroIva;
   final String giro;
   final String direccion;
-  final String celular;   // guardado tal como lo escribió el usuario (puede estar vacío)
-  final String email;     // igual
+  final String celular;
+  final String email;
 
   Contacto({
     required this.nombre,
@@ -67,7 +74,6 @@ class ContactosDB {
     return lista.map((e) => Contacto.fromJson(e)).toList();
   }
 
-  // Llave única: nombre + dui + registro_iva + celular
   static Future<void> guardar(Contacto c) async {
     final lista = await cargarTodos();
     final idx = lista.indexWhere((x) =>
@@ -84,7 +90,6 @@ class ContactosDB {
     await prefs.setString(_key, jsonEncode(lista.map((e) => e.toJson()).toList()));
   }
 
-  // Actualiza el registro original con los nuevos valores (busca por valores originales)
   static Future<void> actualizar(Contacto original, Contacto nuevo) async {
     final lista = await cargarTodos();
     final idx = lista.indexWhere((x) =>
@@ -95,7 +100,7 @@ class ContactosDB {
     if (idx >= 0) {
       lista[idx] = nuevo;
     } else {
-      lista.add(nuevo); // no debería pasar, pero como fallback lo agrega
+      lista.add(nuevo);
     }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_key, jsonEncode(lista.map((e) => e.toJson()).toList()));
@@ -128,8 +133,7 @@ class FormularioScreen extends StatefulWidget {
   State<FormularioScreen> createState() => _FormularioScreenState();
 }
 
-class _FormularioScreenState extends State<FormularioScreen>
-    with WidgetsBindingObserver {
+class _FormularioScreenState extends State<FormularioScreen> {
   final _formKey = GlobalKey<FormState>();
 
   final _nombresCtrl    = TextEditingController();
@@ -152,28 +156,30 @@ class _FormularioScreenState extends State<FormularioScreen>
   final _conceptoFocus  = FocusNode();
   final _montoFocus     = FocusNode();
 
-  List<Contacto> _todosContactos    = [];
-  List<Contacto> _sugerencias       = [];
+  List<Contacto> _todosContactos = [];
+  List<Contacto> _sugerencias    = [];
   Contacto? _contactoOriginal;
-  bool _esContactoExistente         = false;
-  bool _esperandoRegreso            = false;
-  String _celularServidor           = _kDefaultCelularServidor;
-  String _nombreEmpresa             = _kDefaultNombreEmpresa;
-  String _numRegistro               = _kDefaultNumRegistro;
-  String _nombreServidor            = _kDefaultNombreServidor;
+  bool _esContactoExistente      = false;
+  bool _isSending                = false;
+
+  String _backendUrl     = _kDefaultBackendUrl;
+  String _nombreEmpresa  = _kDefaultNombreEmpresa;
+  String _numRegistro    = _kDefaultNumRegistro;
+  String _nombreServidor = _kDefaultNombreServidor;
+  String _celularDest    = _kDefaultCelularDest;
+  String _nombreUsuario  = _kDefaultNombreUsuario;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     _cargarContactos();
-    _cargarCelularServidor();
+    _cargarConfiguracion();
     _nombresCtrl.addListener(_filtrarSugerencias);
+    _inicializarPush();
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _nombresCtrl.removeListener(_filtrarSugerencias);
     for (final c in [_nombresCtrl, _duiCtrl, _ivaCtrl, _giroCtrl,
         _direccionCtrl, _celularCtrl, _emailCtrl, _conceptoCtrl, _montoCtrl]) {
@@ -186,40 +192,73 @@ class _FormularioScreenState extends State<FormularioScreen>
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _esperandoRegreso) {
-      _esperandoRegreso = false;
-      Future.delayed(const Duration(milliseconds: 400), _preguntarLimpiar);
-    }
-  }
-
   Future<void> _cargarContactos() async {
     final lista = await ContactosDB.cargarTodos();
     if (mounted) setState(() => _todosContactos = lista);
   }
 
-  Future<void> _cargarCelularServidor() async {
+  Future<void> _cargarConfiguracion() async {
     final prefs = await SharedPreferences.getInstance();
-    final num      = prefs.getString('celularserver')   ?? _kDefaultCelularServidor;
-    final empresa  = prefs.getString('nombre_empresa')  ?? _kDefaultNombreEmpresa;
-    final registro  = prefs.getString('num_registro')     ?? _kDefaultNumRegistro;
-    final servidor  = prefs.getString('nombre_servidor')  ?? _kDefaultNombreServidor;
     if (mounted) {
       setState(() {
-        _celularServidor = num;
-        _nombreEmpresa   = empresa;
-        _numRegistro     = registro;
-        _nombreServidor  = servidor;
+        _backendUrl    = prefs.getString('backend_url')      ?? _kDefaultBackendUrl;
+        _nombreEmpresa = prefs.getString('nombre_empresa')   ?? _kDefaultNombreEmpresa;
+        _numRegistro   = prefs.getString('num_registro')     ?? _kDefaultNumRegistro;
+        _nombreServidor= prefs.getString('nombre_servidor')  ?? _kDefaultNombreServidor;
+        _celularDest   = prefs.getString('celularserver')    ?? _kDefaultCelularDest;
+        _nombreUsuario = prefs.getString('nombre_usuario')   ?? _kDefaultNombreUsuario;
       });
     }
   }
 
+  Future<void> _inicializarPush() async {
+    try {
+      await FcmService.initialize();
+      final token = await FcmService.getToken();
+      if (token == null) return;
+
+      final uuid    = await DeviceHelper.getOrCreateUuid();
+      final prefs   = await SharedPreferences.getInstance();
+      final regIva  = prefs.getString('num_registro')    ?? _kDefaultNumRegistro;
+      final celDest = prefs.getString('celularserver')   ?? _kDefaultCelularDest;
+      final usuario = prefs.getString('nombre_usuario')  ?? _kDefaultNombreUsuario;
+      final url     = prefs.getString('backend_url')     ?? _kDefaultBackendUrl;
+
+      if (regIva.isEmpty) return; // No registrar si no hay registro IVA configurado
+
+      final api = ApiService(url);
+      await api.registrarDispositivo(
+        registroIva:    regIva,
+        numeroCelular:  celDest,
+        nombreUsuario:  usuario,
+        deviceUuid:     uuid,
+        fcmToken:       token,
+      );
+
+      FcmService.onTokenRefresh((newToken) async {
+        final prefs2 = await SharedPreferences.getInstance();
+        final api2 = ApiService(prefs2.getString('backend_url') ?? _kDefaultBackendUrl);
+        await api2.registrarDispositivo(
+          registroIva:   prefs2.getString('num_registro')   ?? '',
+          numeroCelular: prefs2.getString('celularserver')  ?? _kDefaultCelularDest,
+          nombreUsuario: prefs2.getString('nombre_usuario') ?? _kDefaultNombreUsuario,
+          deviceUuid:    await DeviceHelper.getOrCreateUuid(),
+          fcmToken:      newToken,
+        );
+      });
+    } catch (_) {
+      // Silencioso: no bloquear la app si falla el registro push
+    }
+  }
+
   Future<void> _abrirConfiguracion() async {
-    final ctrlCelular   = TextEditingController(text: _celularServidor);
-    final ctrlEmpresa   = TextEditingController(text: _nombreEmpresa);
-    final ctrlRegistro  = TextEditingController(text: _numRegistro);
-    final ctrlServidor  = TextEditingController(text: _nombreServidor);
+    final ctrlBackend  = TextEditingController(text: _backendUrl);
+    final ctrlEmpresa  = TextEditingController(text: _nombreEmpresa);
+    final ctrlRegistro = TextEditingController(text: _numRegistro);
+    final ctrlServidor = TextEditingController(text: _nombreServidor);
+    final ctrlCelular  = TextEditingController(text: _celularDest);
+    final ctrlUsuario  = TextEditingController(text: _nombreUsuario);
+
     final guardado = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -229,82 +268,103 @@ class _FormularioScreenState extends State<FormularioScreen>
           SizedBox(width: 8),
           Text('Configuración', style: TextStyle(fontSize: 15)),
         ]),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Nombre de empresa:',
-                style: TextStyle(fontSize: 13)),
-            const SizedBox(height: 6),
-            TextField(
-              controller: ctrlEmpresa,
-              textCapitalization: TextCapitalization.characters,
-              style: const TextStyle(fontSize: 14),
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                hintText: 'EMPRESA DE PRUEBA',
-                isDense: true,
-                contentPadding:
-                    EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('URL del backend:', style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: ctrlBackend,
+                keyboardType: TextInputType.url,
+                style: const TextStyle(fontSize: 13),
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: 'http://192.168.1.x:8000',
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                ),
               ),
-            ),
-            const SizedBox(height: 14),
-            const Text('Nombre de servidor:',
-                style: TextStyle(fontSize: 13)),
-            const SizedBox(height: 6),
-            TextField(
-              controller: ctrlServidor,
-              textCapitalization: TextCapitalization.characters,
-              style: const TextStyle(fontSize: 14),
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                hintText: 'SIGA1',
-                isDense: true,
-                contentPadding:
-                    EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              const SizedBox(height: 14),
+              const Text('Nombre de empresa:', style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: ctrlEmpresa,
+                textCapitalization: TextCapitalization.characters,
+                style: const TextStyle(fontSize: 14),
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: 'EMPRESA DE PRUEBA',
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                ),
               ),
-            ),
-            const SizedBox(height: 14),
-            const Text('Número de registro empresa:',
-                style: TextStyle(fontSize: 13)),
-            const SizedBox(height: 6),
-            TextField(
-              controller: ctrlRegistro,
-              textCapitalization: TextCapitalization.characters,
-              style: const TextStyle(fontSize: 14),
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                hintText: 'Ej: 12345-6',
-                isDense: true,
-                contentPadding:
-                    EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              const SizedBox(height: 14),
+              const Text('Nombre de servidor:', style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: ctrlServidor,
+                textCapitalization: TextCapitalization.characters,
+                style: const TextStyle(fontSize: 14),
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: 'SIGA1',
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                ),
               ),
-            ),
-            const SizedBox(height: 14),
-            const Text('Número WhatsApp destino:',
-                style: TextStyle(fontSize: 13)),
-            const SizedBox(height: 6),
-            TextField(
-              controller: ctrlCelular,
-              keyboardType: TextInputType.phone,
-              style: const TextStyle(fontSize: 14),
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                hintText: '63092051',
-                isDense: true,
-                contentPadding:
-                    EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                prefixText: '+503 ',
+              const SizedBox(height: 14),
+              const Text('Número de registro empresa:', style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: ctrlRegistro,
+                textCapitalization: TextCapitalization.characters,
+                style: const TextStyle(fontSize: 14),
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: 'Ej: 12345-6',
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                ),
               ),
-              inputFormatters: [
-                FilteringTextInputFormatter.digitsOnly,
-                LengthLimitingTextInputFormatter(8),
-              ],
-            ),
-            const SizedBox(height: 4),
-            const Text('Solo el número local (8 dígitos)',
-                style: TextStyle(fontSize: 11, color: Colors.grey)),
-          ],
+              const SizedBox(height: 14),
+              const Text('Número destino (notificaciones):', style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: ctrlCelular,
+                keyboardType: TextInputType.phone,
+                style: const TextStyle(fontSize: 14),
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: '63092051',
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                ),
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(8),
+                ],
+              ),
+              const SizedBox(height: 4),
+              const Text('Número del operador que recibirá las notificaciones',
+                  style: TextStyle(fontSize: 11, color: Colors.grey)),
+              const SizedBox(height: 14),
+              const Text('Nombre de usuario:', style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: ctrlUsuario,
+                textCapitalization: TextCapitalization.characters,
+                style: const TextStyle(fontSize: 14),
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: 'OPERADOR',
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -322,19 +382,25 @@ class _FormularioScreenState extends State<FormularioScreen>
         ],
       ),
     );
-    final numNuevo       = ctrlCelular.text.trim();
-    final empresaNueva   = ctrlEmpresa.text.trim().toUpperCase();
-    final registroNuevo  = ctrlRegistro.text.trim().toUpperCase();
-    final servidorNuevo  = ctrlServidor.text.trim().toUpperCase();
-    ctrlCelular.dispose();
+
+    final backendNuevo  = ctrlBackend.text.trim();
+    final empresaNueva  = ctrlEmpresa.text.trim().toUpperCase();
+    final registroNuevo = ctrlRegistro.text.trim().toUpperCase();
+    final servidorNuevo = ctrlServidor.text.trim().toUpperCase();
+    final celularNuevo  = ctrlCelular.text.trim();
+    final usuarioNuevo  = ctrlUsuario.text.trim().toUpperCase();
+    ctrlBackend.dispose();
     ctrlEmpresa.dispose();
     ctrlRegistro.dispose();
     ctrlServidor.dispose();
+    ctrlCelular.dispose();
+    ctrlUsuario.dispose();
+
     if (guardado == true && mounted) {
       final prefs = await SharedPreferences.getInstance();
-      if (numNuevo.isNotEmpty) {
-        await prefs.setString('celularserver', numNuevo);
-        setState(() => _celularServidor = numNuevo);
+      if (backendNuevo.isNotEmpty) {
+        await prefs.setString('backend_url', backendNuevo);
+        setState(() => _backendUrl = backendNuevo);
       }
       if (empresaNueva.isNotEmpty) {
         await prefs.setString('nombre_empresa', empresaNueva);
@@ -345,6 +411,14 @@ class _FormularioScreenState extends State<FormularioScreen>
       if (servidorNuevo.isNotEmpty) {
         await prefs.setString('nombre_servidor', servidorNuevo);
         setState(() => _nombreServidor = servidorNuevo);
+      }
+      if (celularNuevo.isNotEmpty) {
+        await prefs.setString('celularserver', celularNuevo);
+        setState(() => _celularDest = celularNuevo);
+      }
+      if (usuarioNuevo.isNotEmpty) {
+        await prefs.setString('nombre_usuario', usuarioNuevo);
+        setState(() => _nombreUsuario = usuarioNuevo);
       }
     }
   }
@@ -431,11 +505,11 @@ class _FormularioScreenState extends State<FormularioScreen>
   }
 
   Future<void> _confirmarYEnviar() async {
+    if (_isSending) return;
     if (!_formKey.currentState!.validate()) return;
     FocusScope.of(context).unfocus();
     setState(() => _sugerencias = []);
 
-    // Valores efectivos para el JSON (con defaults si están vacíos)
     final celularEnvio = _celularCtrl.text.trim().isEmpty
         ? '7000-0000'
         : _celularCtrl.text.trim();
@@ -459,14 +533,14 @@ class _FormularioScreenState extends State<FormularioScreen>
             const Text('¿Los datos son correctos?',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
             const SizedBox(height: 10),
-            _fila(Icons.person_outline,           'Nombre',       _nombresCtrl.text.trim()),
-            _fila(Icons.badge_outlined,            'DUI',          _duiCtrl.text.trim()),
-            _fila(Icons.receipt_long_outlined,     'Reg. IVA',     _ivaCtrl.text.trim()),
-            _fila(Icons.store_outlined,            'Giro',         _giroCtrl.text.trim()),
-            _fila(Icons.location_on_outlined,      'Dirección',    _direccionCtrl.text.trim()),
-            _fila(Icons.phone_outlined,            'Celular',      celularEnvio),
-            _fila(Icons.email_outlined,            'Email',        emailEnvio),
-            _fila(Icons.medical_services_outlined, 'Concepto',     _conceptoCtrl.text.trim()),
+            _fila(Icons.person_outline,           'Nombre',    _nombresCtrl.text.trim()),
+            _fila(Icons.badge_outlined,            'DUI',       _duiCtrl.text.trim()),
+            _fila(Icons.receipt_long_outlined,     'Reg. IVA',  _ivaCtrl.text.trim()),
+            _fila(Icons.store_outlined,            'Giro',      _giroCtrl.text.trim()),
+            _fila(Icons.location_on_outlined,      'Dirección', _direccionCtrl.text.trim()),
+            _fila(Icons.phone_outlined,            'Celular',   celularEnvio),
+            _fila(Icons.email_outlined,            'Email',     emailEnvio),
+            _fila(Icons.medical_services_outlined, 'Concepto',  _conceptoCtrl.text.trim()),
             _fila(Icons.attach_money,              'Monto',
                 '\$${double.tryParse(_montoCtrl.text.trim())?.toStringAsFixed(2)}'),
           ],
@@ -490,7 +564,7 @@ class _FormularioScreenState extends State<FormularioScreen>
     );
     if (confirmar != true || !mounted) return;
 
-    // Normalizar a mayúsculas los campos que lo requieren
+    // Normalizar a mayúsculas
     final nombre    = _nombresCtrl.text.trim().toUpperCase();
     final giro      = _giroCtrl.text.trim().toUpperCase();
     final direccion = _direccionCtrl.text.trim().toUpperCase();
@@ -506,8 +580,6 @@ class _FormularioScreenState extends State<FormularioScreen>
       email:       _emailCtrl.text.trim(),
     );
 
-    // Si era existente: actualiza el registro original con los nuevos datos
-    // Si es nuevo: guarda (busca por unicidad o agrega)
     if (_esContactoExistente && _contactoOriginal != null) {
       await ContactosDB.actualizar(_contactoOriginal!, contactoNuevo);
     } else {
@@ -515,40 +587,69 @@ class _FormularioScreenState extends State<FormularioScreen>
     }
     await _cargarContactos();
 
-    await _enviarWhatsApp(nombre, giro, direccion, concepto, celularEnvio, emailEnvio);
+    await _enviarAlBackend(nombre, giro, direccion, concepto, celularEnvio, emailEnvio);
   }
 
-  Future<void> _enviarWhatsApp(String nombre, String giro, String direccion,
+  Future<void> _enviarAlBackend(String nombre, String giro, String direccion,
       String concepto, String celular, String email) async {
-    final payload = const JsonEncoder.withIndent('  ').convert({
-      'empresa':  _nombreEmpresa,
-      'servidor': _nombreServidor,
-      'data': {
-        'nombre':       nombre,
-        'dui':          _duiCtrl.text.trim(),
-        'registro_iva': _ivaCtrl.text.trim().toUpperCase(),
-        'giro':         giro,
-        'direccion':    direccion,
-        'celular':      celular,
-        'email':        email,
-        'concepto':     concepto,
-        'monto':        double.tryParse(_montoCtrl.text.trim()) ?? 0.0,
-      }
-    });
+    if (!mounted) return;
+    setState(() => _isSending = true);
 
-    final mensaje = '*$_nombreEmpresa*\n```\n$payload\n```';
-    final url = Uri.parse(
-        'https://wa.me/$_kPrefixPais$_celularServidor?text=${Uri.encodeComponent(mensaje)}');
+    try {
+      final cuerpo = const JsonEncoder.withIndent('  ').convert({
+        'empresa':  _nombreEmpresa,
+        'servidor': _nombreServidor,
+        'data': {
+          'nombre':       nombre,
+          'dui':          _duiCtrl.text.trim(),
+          'registro_iva': _ivaCtrl.text.trim().toUpperCase(),
+          'giro':         giro,
+          'direccion':    direccion,
+          'celular':      celular,
+          'email':        email,
+          'concepto':     concepto,
+          'monto':        double.tryParse(_montoCtrl.text.trim()) ?? 0.0,
+        }
+      });
 
-    if (await canLaunchUrl(url)) {
-      _esperandoRegreso = true;
-      await launchUrl(url, mode: LaunchMode.externalNonBrowserApplication);
-    } else {
+      final api    = ApiService(_backendUrl);
+      final result = await api.enviarDatos(
+        registroIva:    _numRegistro,
+        numeroDestino:  _celularDest,
+        titulo:         _nombreEmpresa,
+        cuerpo:         cuerpo,
+      );
+
       if (!mounted) return;
+      setState(() => _isSending = false);
+
+      if (result.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.message.isNotEmpty ? result.message : 'Datos enviados correctamente'),
+            backgroundColor: const Color(0xFF25D366),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        await Future.delayed(const Duration(milliseconds: 600));
+        await _preguntarLimpiar();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: ${result.message}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSending = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No se pudo abrir WhatsApp'),
+        SnackBar(
+          content: Text('Error inesperado: $e'),
           backgroundColor: Colors.red,
+          duration: const Duration(seconds: 4),
         ),
       );
     }
@@ -633,8 +734,13 @@ class _FormularioScreenState extends State<FormularioScreen>
           ),
           actions: [
             IconButton(
-              icon: const Icon(Icons.send, color: Colors.white),
-              onPressed: _confirmarYEnviar,
+              icon: _isSending
+                  ? const SizedBox(
+                      width: 20, height: 20,
+                      child: CircularProgressIndicator(
+                          color: Colors.white, strokeWidth: 2))
+                  : const Icon(Icons.send, color: Colors.white),
+              onPressed: _isSending ? null : _confirmarYEnviar,
               tooltip: 'Enviar',
             ),
           ],
@@ -644,7 +750,7 @@ class _FormularioScreenState extends State<FormularioScreen>
           child: Column(
             children: [
 
-              // ── Nombre fijo (no scrollea) ──────────────────────────────
+              // ── Nombre fijo ────────────────────────────────────────────
               Container(
                 color: const Color(0xFFF5F5F5),
                 padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
@@ -672,8 +778,6 @@ class _FormularioScreenState extends State<FormularioScreen>
                       validator: (v) =>
                           v == null || v.trim().isEmpty ? 'Campo requerido' : null,
                     ),
-
-                    // ── Sugerencias dropdown ───────────────────────────────
                     if (_sugerencias.isNotEmpty)
                       Material(
                         elevation: 4,
@@ -689,7 +793,7 @@ class _FormularioScreenState extends State<FormularioScreen>
                             padding: EdgeInsets.zero,
                             physics: const NeverScrollableScrollPhysics(),
                             itemCount: _sugerencias.length,
-                            separatorBuilder: (context, index) =>
+                            separatorBuilder: (_, __) =>
                                 const Divider(height: 1, indent: 12, endIndent: 12),
                             itemBuilder: (ctx, i) {
                               final c = _sugerencias[i];
@@ -729,15 +833,13 @@ class _FormularioScreenState extends State<FormularioScreen>
                 ),
               ),
 
-              // ── Resto de campos scrolleables ───────────────────────────
+              // ── Campos scrolleables ────────────────────────────────────
               Expanded(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-
-                      // ── DUI ──────────────────────────────────────────────
                       _campo(
                         controller: _duiCtrl,
                         focusNode: _duiFocus,
@@ -756,8 +858,6 @@ class _FormularioScreenState extends State<FormularioScreen>
                         },
                       ),
                       const SizedBox(height: 8),
-
-                      // ── Registro IVA ─────────────────────────────────────
                       _campo(
                         controller: _ivaCtrl,
                         focusNode: _ivaFocus,
@@ -769,8 +869,6 @@ class _FormularioScreenState extends State<FormularioScreen>
                         formatters: [_UpperCaseFormatter()],
                       ),
                       const SizedBox(height: 8),
-
-                      // ── Giro ─────────────────────────────────────────────
                       _campo(
                         controller: _giroCtrl,
                         focusNode: _giroFocus,
@@ -782,8 +880,6 @@ class _FormularioScreenState extends State<FormularioScreen>
                         formatters: [_UpperCaseFormatter()],
                       ),
                       const SizedBox(height: 8),
-
-                      // ── Dirección ────────────────────────────────────────
                       TextFormField(
                         controller: _direccionCtrl,
                         focusNode: _direccionFocus,
@@ -808,8 +904,6 @@ class _FormularioScreenState extends State<FormularioScreen>
                             v == null || v.trim().isEmpty ? 'Campo requerido' : null,
                       ),
                       const SizedBox(height: 8),
-
-                      // ── Celular (opcional) ───────────────────────────────
                       TextFormField(
                         controller: _celularCtrl,
                         focusNode: _celularFocus,
@@ -840,8 +934,6 @@ class _FormularioScreenState extends State<FormularioScreen>
                         },
                       ),
                       const SizedBox(height: 8),
-
-                      // ── Email (opcional) ─────────────────────────────────
                       _campo(
                         controller: _emailCtrl,
                         focusNode: _emailFocus,
@@ -859,8 +951,6 @@ class _FormularioScreenState extends State<FormularioScreen>
                         },
                       ),
                       const SizedBox(height: 8),
-
-                      // ── Concepto ─────────────────────────────────────────
                       _campo(
                         controller: _conceptoCtrl,
                         focusNode: _conceptoFocus,
@@ -873,8 +963,6 @@ class _FormularioScreenState extends State<FormularioScreen>
                             v == null || v.trim().isEmpty ? 'Campo requerido' : null,
                       ),
                       const SizedBox(height: 8),
-
-                      // ── Monto ────────────────────────────────────────────
                       TextFormField(
                         controller: _montoCtrl,
                         focusNode: _montoFocus,
@@ -906,24 +994,32 @@ class _FormularioScreenState extends State<FormularioScreen>
                         },
                       ),
                       const SizedBox(height: 20),
-
-                      // ── Botón Enviar ──────────────────────────────────────
                       SizedBox(
                         width: double.infinity,
                         height: 46,
                         child: ElevatedButton.icon(
-                          onPressed: _confirmarYEnviar,
+                          onPressed: _isSending ? null : _confirmarYEnviar,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFF25D366),
                             foregroundColor: Colors.white,
+                            disabledBackgroundColor:
+                                const Color(0xFF25D366).withValues(alpha: 0.6),
+                            disabledForegroundColor: Colors.white70,
                             shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(10)),
                             elevation: 3,
                           ),
-                          icon: const Icon(Icons.send, size: 18),
-                          label: const Text('Enviar',
-                              style: TextStyle(
-                                  fontSize: 15, fontWeight: FontWeight.bold)),
+                          icon: _isSending
+                              ? const SizedBox(
+                                  width: 16, height: 16,
+                                  child: CircularProgressIndicator(
+                                      color: Colors.white, strokeWidth: 2))
+                              : const Icon(Icons.send, size: 18),
+                          label: Text(
+                            _isSending ? 'Enviando...' : 'Enviar',
+                            style: const TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.bold),
+                          ),
                         ),
                       ),
                       const SizedBox(height: 10),
