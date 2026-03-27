@@ -1,11 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'services/api_service.dart';
-import 'services/fcm_service.dart';
-import 'helpers/device_helper.dart';
+import 'services/firebase_service.dart';
+import 'helpers/device_uuid.dart';
 
 // ─── Constantes de configuración ──────────────────────────────────────────────
 const String _kDefaultBackendUrl    = 'http://10.0.2.2:8000';
@@ -162,6 +164,9 @@ class _FormularioScreenState extends State<FormularioScreen> {
   bool _esContactoExistente      = false;
   bool _isSending                = false;
 
+  StreamSubscription<RemoteMessage>? _foregroundSub;
+  StreamSubscription<RemoteMessage>? _tapSub;
+
   String _backendUrl     = _kDefaultBackendUrl;
   String _nombreEmpresa  = _kDefaultNombreEmpresa;
   String _numRegistro    = _kDefaultNumRegistro;
@@ -180,6 +185,8 @@ class _FormularioScreenState extends State<FormularioScreen> {
 
   @override
   void dispose() {
+    _foregroundSub?.cancel();
+    _tapSub?.cancel();
     _nombresCtrl.removeListener(_filtrarSugerencias);
     for (final c in [_nombresCtrl, _duiCtrl, _ivaCtrl, _giroCtrl,
         _direccionCtrl, _celularCtrl, _emailCtrl, _conceptoCtrl, _montoCtrl]) {
@@ -213,41 +220,77 @@ class _FormularioScreenState extends State<FormularioScreen> {
 
   Future<void> _inicializarPush() async {
     try {
-      await FcmService.initialize();
-      final token = await FcmService.getToken();
+      await FirebaseService.initialize();
+
+      // ── Subscripción a mensajes en foreground ──────────────────────────────
+      _foregroundSub = FirebaseService.onForegroundMessage.listen((msg) {
+        if (!mounted) return;
+        final titulo = msg.notification?.title ?? 'Notificación';
+        final cuerpo = msg.notification?.body  ?? '';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(titulo,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 13)),
+                if (cuerpo.isNotEmpty)
+                  Text(cuerpo, style: const TextStyle(fontSize: 12)),
+              ],
+            ),
+            backgroundColor: const Color(0xFF1A73E8),
+            duration: const Duration(seconds: 5),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      });
+
+      // ── Subscripción a toque de notificación ──────────────────────────────
+      // Preparado para navegación futura: aquí se puede agregar Navigator.push
+      _tapSub = FirebaseService.onNotificationTap.listen((msg) {
+        // TODO: navegar a pantalla relevante según msg.data
+        debugPrint('[FCM] Tap: ${msg.notification?.title} | data: ${msg.data}');
+      });
+
+      // ── Obtener y registrar token ──────────────────────────────────────────
+      final token = await FirebaseService.getToken();
       if (token == null) return;
 
-      final uuid    = await DeviceHelper.getOrCreateUuid();
+      final uuid    = await DeviceUuid.getOrCreate();
       final prefs   = await SharedPreferences.getInstance();
-      final regIva  = prefs.getString('num_registro')    ?? _kDefaultNumRegistro;
-      final celDest = prefs.getString('celularserver')   ?? _kDefaultCelularDest;
-      final usuario = prefs.getString('nombre_usuario')  ?? _kDefaultNombreUsuario;
-      final url     = prefs.getString('backend_url')     ?? _kDefaultBackendUrl;
+      final regIva  = prefs.getString('num_registro')   ?? _kDefaultNumRegistro;
+      final celDest = prefs.getString('celularserver')  ?? _kDefaultCelularDest;
+      final usuario = prefs.getString('nombre_usuario') ?? _kDefaultNombreUsuario;
+      final url     = prefs.getString('backend_url')    ?? _kDefaultBackendUrl;
 
-      if (regIva.isEmpty) return; // No registrar si no hay registro IVA configurado
+      // Solo registrar si el registro IVA está configurado.
+      if (regIva.isEmpty) return;
 
       final api = ApiService(url);
       await api.registrarDispositivo(
-        registroIva:    regIva,
-        numeroCelular:  celDest,
-        nombreUsuario:  usuario,
-        deviceUuid:     uuid,
-        fcmToken:       token,
+        registroIva:   regIva,
+        numeroCelular: celDest,
+        nombreUsuario: usuario,
+        deviceUuid:    uuid,
+        fcmToken:      token,
       );
 
-      FcmService.onTokenRefresh((newToken) async {
-        final prefs2 = await SharedPreferences.getInstance();
-        final api2 = ApiService(prefs2.getString('backend_url') ?? _kDefaultBackendUrl);
+      // ── Refrescar token automáticamente cuando Firebase lo rote ───────────
+      FirebaseService.onTokenRefresh((newToken) async {
+        final p2  = await SharedPreferences.getInstance();
+        final api2 = ApiService(p2.getString('backend_url') ?? _kDefaultBackendUrl);
         await api2.registrarDispositivo(
-          registroIva:   prefs2.getString('num_registro')   ?? '',
-          numeroCelular: prefs2.getString('celularserver')  ?? _kDefaultCelularDest,
-          nombreUsuario: prefs2.getString('nombre_usuario') ?? _kDefaultNombreUsuario,
-          deviceUuid:    await DeviceHelper.getOrCreateUuid(),
+          registroIva:   p2.getString('num_registro')   ?? '',
+          numeroCelular: p2.getString('celularserver')  ?? _kDefaultCelularDest,
+          nombreUsuario: p2.getString('nombre_usuario') ?? _kDefaultNombreUsuario,
+          deviceUuid:    await DeviceUuid.getOrCreate(),
           fcmToken:      newToken,
         );
       });
     } catch (_) {
-      // Silencioso: no bloquear la app si falla el registro push
+      // Silencioso: no bloquear la app si falla la inicialización push.
     }
   }
 
@@ -793,7 +836,7 @@ class _FormularioScreenState extends State<FormularioScreen> {
                             padding: EdgeInsets.zero,
                             physics: const NeverScrollableScrollPhysics(),
                             itemCount: _sugerencias.length,
-                            separatorBuilder: (_, __) =>
+                            separatorBuilder: (context, index) =>
                                 const Divider(height: 1, indent: 12, endIndent: 12),
                             itemBuilder: (ctx, i) {
                               final c = _sugerencias[i];
