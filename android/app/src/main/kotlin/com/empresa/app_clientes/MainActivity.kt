@@ -2,6 +2,8 @@ package com.empresa.app_clientes
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
+import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -21,8 +23,7 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "getPhoneNumber" -> {
-                        val numero = leerNumeroCelular()
-                        result.success(numero)
+                        result.success(leerNumeroCelular())
                     }
                     "requestPhonePermission" -> {
                         val granted = tienePermiso()
@@ -50,11 +51,25 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun leerNumeroCelular(): String? {
+        if (!tienePermiso()) return null
         return try {
-            if (!tienePermiso()) return null
+            // Intento 1: TelephonyManager.line1Number (funciona en algunos operadores)
             val tm = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
-            val numero = tm.line1Number
-            if (numero.isNullOrBlank()) null else numero
+            val num1 = tm.line1Number
+            if (!num1.isNullOrBlank()) return num1
+
+            // Intento 2: SubscriptionManager (funciona mejor en Android 5.1+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                val sm = getSystemService(TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
+                val subs = sm.activeSubscriptionInfoList
+                if (subs != null) {
+                    for (info in subs) {
+                        val num2 = info.number
+                        if (!num2.isNullOrBlank()) return num2
+                    }
+                }
+            }
+            null
         } catch (e: Exception) {
             null
         }
