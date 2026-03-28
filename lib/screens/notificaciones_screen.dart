@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../widgets/notif_detalle_dialog.dart';
 
 // ─── Modelo ───────────────────────────────────────────────────────────────────
 class NotificacionLocal {
@@ -178,54 +179,15 @@ class _NotificacionesScreenState extends State<NotificacionesScreen> {
   }
 
   void _verDetalle(NotificacionLocal n) {
-    Clipboard.setData(ClipboardData(text: n.cuerpo));
+    final parsed = parsearCuerpoNotif(n.cuerpo);
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: Row(children: [
-          const Icon(Icons.notifications_active, color: Color(0xFF25D366)),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(n.titulo,
-                style: const TextStyle(
-                    fontSize: 14, fontWeight: FontWeight.bold)),
-          ),
-        ]),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                _formatearFecha(n.fecha),
-                style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-              ),
-              const SizedBox(height: 8),
-              SelectableText(
-                n.cuerpo,
-                style:
-                    const TextStyle(fontSize: 12, fontFamily: 'monospace'),
-              ),
-              const SizedBox(height: 8),
-              Row(children: [
-                const Icon(Icons.copy, size: 14, color: Colors.grey),
-                const SizedBox(width: 4),
-                Text('Copiado al portapapeles',
-                    style: TextStyle(fontSize: 11, color: Colors.grey[600])),
-              ]),
-            ],
-          ),
-        ),
-        actions: [
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF25D366),
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Aceptar'),
-          ),
-        ],
+      builder: (_) => NotifDetalleDialog(
+        titulo:    n.titulo,
+        empresa:   parsed.empresa,
+        servidor:  parsed.servidor,
+        data:      parsed.data,
+        cuerpoRaw: n.cuerpo,
       ),
     );
   }
@@ -339,6 +301,9 @@ class _NotificacionesScreenState extends State<NotificacionesScreen> {
                             const SizedBox(height: 6),
                         itemBuilder: (_, i) {
                           final n = _filtradas[i];
+                          final p = parsearCuerpoNotif(n.cuerpo);
+                          final nombre   = p.data['nombre']?.toString() ?? '';
+                          final concepto = p.data['concepto']?.toString() ?? '';
                           return Dismissible(
                             key: Key('${n.fecha.toIso8601String()}_$i'),
                             direction: DismissDirection.endToStart,
@@ -363,24 +328,48 @@ class _NotificacionesScreenState extends State<NotificacionesScreen> {
                                   child: Icon(Icons.notifications,
                                       color: Color(0xFF25D366), size: 20),
                                 ),
-                                title: Text(
-                                  n.titulo,
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 13),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                subtitle: Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      n.cuerpo,
-                                      maxLines: 2,
+                                title: Row(children: [
+                                  Expanded(
+                                    child: Text(
+                                      p.empresa.isNotEmpty ? p.empresa : n.titulo,
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 13),
+                                      maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 11),
                                     ),
+                                  ),
+                                  if (p.servidor.isNotEmpty)
+                                    Container(
+                                      margin: const EdgeInsets.only(left: 6),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFE3F2FD),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Text(p.servidor,
+                                          style: const TextStyle(
+                                              fontSize: 10,
+                                              color: Color(0xFF1565C0),
+                                              fontWeight: FontWeight.w600)),
+                                    ),
+                                ]),
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    if (nombre.isNotEmpty)
+                                      Text(nombre,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(fontSize: 12)),
+                                    if (concepto.isNotEmpty)
+                                      Text(concepto,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                              fontSize: 11,
+                                              color: Colors.grey[600])),
                                     const SizedBox(height: 2),
                                     Text(
                                       _formatearFecha(n.fecha),
@@ -392,8 +381,7 @@ class _NotificacionesScreenState extends State<NotificacionesScreen> {
                                 ),
                                 isThreeLine: true,
                                 onTap: () => _verDetalle(n),
-                                trailing: const Icon(
-                                    Icons.chevron_right,
+                                trailing: const Icon(Icons.chevron_right,
                                     color: Colors.grey),
                               ),
                             ),
