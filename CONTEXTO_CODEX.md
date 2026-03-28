@@ -1,155 +1,98 @@
-# Contexto del Proyecto — Para OpenAI Codex / Claude
+# Contexto del Proyecto - Facturame
 
-## ¿Qué es este sistema?
+## Que es
 
-Sistema de notificaciones push para empresas compuesto por **tres aplicaciones** que trabajan juntas:
+`facturame` es la app Flutter Android que usan los operadores para enviar datos de clientes y recibir notificaciones push.
 
-1. **App móvil Android "Facturame"** — Flutter — para operadores de campo
-2. **API Backend "Push Cliente"** — Laravel 11 + PostgreSQL + FCM — lógica de negocio y envío push
-3. **Panel web "Push Cliente"** — React + Vite — para administradores
+Trabaja con:
+- Backend Laravel: `push_cliente`
+- Panel web React: `push_cliente`
 
-### Panel web â€” recepciÃ³n visible
-- [x] Historial muestra recepciÃ³n `Confirmada` / `Pendiente`
+## Estado actual
 
----
+- Rama activa: `feature/confirmacion-recepcion-limpieza`
+- APK de distribucion: `D:\Desarrollo_Flutter\clientes\facturame.apk`
+- Produccion:
+  - panel: `https://facturame.appsigasv.com`
+  - api: `https://facturame.appsigasv.com/api/v1`
 
-## Repositorios GitHub
+## Regla funcional vigente
 
-| Proyecto | Repo | Branch activo |
-|---|---|---|
-| App móvil Flutter | `juliocruiz2021/facturame` | `feature/confirmacion-recepcion-limpieza` |
-| Backend + Frontend web | `juliocruiz2021/push_cliente` | `feature/confirmacion-recepcion-limpieza` |
+La app sigue registrando cada telefono por empresa usando `celular_propio`, pero el backend envia por numero global.
 
----
+Eso significa:
+- `celular_propio` identifica ESTE telefono y se registra en `clientes_empresa`.
+- `celularserver` es el numero destino al que el operador quiere enviar.
+- Si el mismo numero existe en varias empresas, ese telefono puede recibir notificaciones de cualquiera de ellas.
+- La app debe mostrar el mensaje sin importar de que empresa venga, siempre que el numero del equipo coincida con el destinatario.
 
-## Rutas locales
+## Flujo real
 
-| Proyecto | Ruta |
-|---|---|
-| App Flutter | `D:\Desarrollo_Flutter\clientes\app_clientes\` |
-| Backend Laravel | `D:\Desarrollo_Flutter\push_cliente\backend\` |
-| Frontend React | `D:\Desarrollo_Flutter\push_cliente\frontend\` |
-| APK de distribución | `D:\Desarrollo_Flutter\clientes\facturame.apk` |
-| Flutter CLI | `C:\Users\julio\AppData\Local\Programs\flutter\bin\flutter.bat` |
-| ADB | `C:\Users\julio\AppData\Local\Android\Sdk\platform-tools\adb.exe` |
-| Dispositivo Android | `R5CY11ZPTDJ` |
+1. Al iniciar, la app registra el dispositivo con:
+   - `registro_iva`
+   - `celular_propio`
+   - `nombre_usuario`
+   - `nombre_servidor`
+   - `device_uuid`
+   - `fcm_token`
+2. El operador llena el formulario y envia:
+   - `registro_iva`
+   - `numero_destino` = `celularserver`
+   - `titulo`
+   - `cuerpo` JSON
+3. El backend busca todos los dispositivos activos con `numero_celular = numero_destino`, aunque pertenezcan a otras empresas.
+4. FCM envia a todos los tokens FCM unicos encontrados.
+5. La app receptora muestra el detalle usando `empresa` y `servidor` que vienen dentro del JSON del mensaje.
+6. Al abrir el detalle, la app confirma recepcion con `mensaje_id` y `numero_celular`.
 
----
+## Configuracion guardada en SharedPreferences
 
-## Cómo se relacionan las tres aplicaciones
+- `backend_url`
+- `nombre_empresa`
+- `nombre_servidor`
+- `num_registro`
+- `celularserver`
+- `celular_propio`
+- `nombre_usuario`
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    FLUJO COMPLETO                            │
-│                                                             │
-│  App Flutter (operador)                                     │
-│    │  1. Al iniciar: registra dispositivo con celular_propio │
-│    │  2. Operador llena formulario con datos del cliente     │
-│    │  3. Toca "Enviar" → POST /api/v1/clientes/enviar-datos  │
-│    │  4. Muestra SnackBar: "✓ Notificación enviada a XXXX"  │
-│    ▼                                                        │
-│  Backend Laravel (API)                                      │
-│    │  5. Busca FCM token por numero_celular == numero_destino│
-│    │  6. Envía push vía kreait/firebase-php (FCM)           │
-│    │  7. Guarda mensaje en BD con estado                    │
-│    ▼                                                        │
-│  Teléfono destino (app Flutter)                             │
-│    │  8. Recibe notificación push de Firebase               │
-│    │  9. Al tocar: muestra diálogo con datos del JSON       │
-│    │  10. Al cerrar diálogo: badge se decrementa            │
-│                                                             │
-│  Panel web React (admin)                                    │
-│    │  Polling cada 20s → GET /api/v1/mensajes/nuevos        │
-│    │  Badge rojo con conteo de mensajes no vistos           │
-│    └─ Al llegar nuevos: notificación del navegador          │
-└─────────────────────────────────────────────────────────────┘
-```
+## Diferencia critica
 
-### Relación entre las tres apps
+- `celular_propio`
+  - numero de ESTE telefono
+  - sirve para registrar el dispositivo y asociar el token FCM
+- `celularserver`
+  - numero destino al que se enviaran las notificaciones
 
-| App Flutter | API Backend | Panel Web React |
-|---|---|---|
-| Registra dispositivo (FCM token + celular_propio) | Guarda en `clientes_empresa` | Lista en `/clientes` |
-| Envía datos del cliente | Crea `mensajes`, reenvía por FCM | Muestra en `/mensajes` |
-| Recibe push, muestra diálogo | Marca estado `enviado`/`fallido` | Badge tiempo real |
+Regla obligatoria:
+- nunca usar `celularserver` como fallback de `celular_propio`
+- si `celular_propio` esta vacio, no se debe registrar el dispositivo
 
----
+## Archivos clave
 
-## Stack tecnológico
+- `lib/main.dart`
+  - pantalla principal
+  - formulario
+  - registro de dispositivo
+  - envio al backend
+- `lib/services/api_service.dart`
+  - llamadas HTTP
+- `lib/services/firebase_service.dart`
+  - FCM
+  - local notifications
+- `lib/screens/notificaciones_screen.dart`
+  - historial local y badge
+- `lib/widgets/notif_detalle_dialog.dart`
+  - parseo del cuerpo JSON
+  - UI del detalle de notificacion
+- `lib/services/recepcion_service.dart`
+  - confirmacion de recepcion al backend
+- `lib/helpers/device_uuid.dart`
+  - UUID estable del equipo
 
-### App móvil (Flutter Android)
-- Flutter 3.x / Dart
-- `firebase_messaging` — push notifications FCM
-- `flutter_local_notifications` — banner en foreground con canal de alta importancia
-- `shared_preferences` — persistencia local de config y notificaciones
-- `http` — llamadas al backend
-- `uuid` — identificador único del dispositivo
-- MethodChannel `facturame/device_info` — leer número SIM y abrir ajustes del SIM
-- `MainActivity.kt` implementa el canal nativo
+## Formato del cuerpo enviado
 
-### Backend (Laravel 11)
-- PHP 8.2 / Laravel 11
-- PostgreSQL (Docker container `sigaerp_postgres`, 127.0.0.1:5432)
-- Laravel Sanctum (autenticación admin web)
-- `kreait/firebase-php` — envío FCM
-- Credenciales Firebase: `storage/app/firebase-credentials.json`
+La app envia el `cuerpo` como JSON string. Debe incluir:
 
-### Frontend web (React + Vite)
-- React 19 + React Router v6
-- TanStack Query v5 (React Query) — data fetching y caché
-- Tailwind CSS 3
-- Axios — HTTP client con baseURL `http://127.0.0.1:8000/api/v1`
-- Puerto Vite: 5200 (dev)
-
----
-
-## Base de datos (PostgreSQL)
-
-```
-empresas
-  id, nombre, registro_iva, activo, timestamps
-
-clientes_empresa
-  id, empresa_id, numero_celular, nombre_usuario, nombre_servidor,
-  device_uuid, fcm_token, plataforma, version_app, activo, timestamps
-
-mensajes
-  id, empresa_id, cliente_empresa_id, numero_destino, titulo, cuerpo,
-  payload_json (jsonb), estado (pendiente|enviado|fallido),
-  proveedor, enviado_at, timestamps
-
-admin_users
-  id, name, email, password, timestamps
-
-personal_access_tokens (Sanctum)
-logs_auditoria
-```
-
----
-
-## Flujo completo del sistema
-
-```
-Operador (Facturame app)
-  │ llena formulario: nombre, DUI, registro IVA, giro, dirección,
-  │ celular, email, concepto, monto
-  │
-  ▼
-POST /api/v1/clientes/enviar-datos
-  {registro_iva, numero_destino: celularserver, titulo, cuerpo: JSON}
-  │
-  ▼
-Backend busca clientes_empresa donde numero_celular == numero_destino
-  → obtiene fcm_token del destinatario
-  → FcmService envía FCM a ese token
-  │
-  ▼
-Teléfono destino recibe notificación push
-  └─ Toca notificación → diálogo con campos del JSON
-     └─ Al cerrar → badge decrementado
-```
-
-### JSON enviado como `cuerpo` del mensaje
 ```json
 {
   "empresa": "NOMBRE EMPRESA",
@@ -163,276 +106,43 @@ Teléfono destino recibe notificación push
     "celular": "76543210",
     "email": "juan@email.com",
     "concepto": "FACTURA",
-    "monto": 150.00
+    "monto": 150.0
   }
 }
 ```
 
----
+La pantalla de detalle y el historial dependen de ese formato.
 
-## App móvil — Configuración por celular
+## Endpoints que usa la app
 
-| Campo | Clave SharedPrefs | Descripción |
-|---|---|---|
-| URL del backend | `backend_url` | `http://192.168.1.10:8000` |
-| Nombre empresa | `nombre_empresa` | Mostrado en la app |
-| Nombre servidor | `nombre_servidor` | Identifica el sistema (ej. SIGA1) |
-| Num. Registro IVA | `num_registro` | Identifica la empresa en el backend |
-| Número destino | `celularserver` | Número al que SE ENVÍAN las notificaciones |
-| Mi número celular | `celular_propio` | Número PROPIO de ESTE teléfono (registro en BD) |
-| Nombre usuario | `nombre_usuario` | Nombre del operador |
+### Publicos
 
-### CRÍTICO — celular_propio vs celularserver
+- `POST /api/v1/clientes/registrar-dispositivo`
+  - registra por `(empresa_id, numero_celular)`
+- `POST /api/v1/clientes/enviar-datos`
+  - el backend resuelve el destino por `numero_destino` global
+- `POST /api/v1/clientes/confirmar-recepcion`
+  - confirma por `mensaje_id + numero_celular (+ device_uuid opcional)`
 
-- `celular_propio` = número de ESTE teléfono → se guarda en `clientes_empresa.numero_celular`
-- `celularserver` = número DESTINO → a quien se envían las notificaciones
-- **NUNCA usar celularserver como fallback para celular_propio**: causaría que el operador sobreescriba el FCM token del destinatario en la BD, y las notificaciones llegarían al operador en vez del destino.
-- Si `celular_propio` está vacío → el dispositivo NO se registra → aparece aviso naranja.
+### Sync de clientes compartidos
 
-### Obtener número propio en configuración
+- `POST /api/v1/clientes-compartidos/sync`
+- `GET /api/v1/clientes-compartidos`
 
-El campo "Mi número celular" tiene un ícono 📱 verde. Al tocarlo:
-1. Si el SIM expone el número → lo pega en el campo y lo copia al portapapeles
-2. Si el SIM no lo expone → abre **Ajustes → Acerca del teléfono** para verlo manualmente
-3. Si el permiso no estaba concedido → muestra diálogo de Android + aviso para reintentar
+## Comportamiento ya cerrado
 
-Métodos usados en Kotlin (`MainActivity.kt`):
-- `TelephonyManager.getLine1Number()` (intento 1)
-- `SubscriptionManager.activeSubscriptionInfoList` (intento 2, Android 5.1+)
-- `openSimSettings` → abre `Settings.ACTION_DEVICE_INFO_SETTINGS`
+- registro de dispositivo con `celular_propio`
+- envio HTTP al backend
+- push FCM
+- historial local
+- badge de no vistas
+- detalle de notificacion
+- confirmacion de recepcion
+- sincronizacion de clientes compartidos por empresa
 
----
+## Notas de mantenimiento
 
-## App móvil — Archivos clave
-
-```
-lib/
-  main.dart                          — Pantalla principal + toda la lógica
-  services/
-    api_service.dart                 — HTTP calls al backend
-    firebase_service.dart            — FCM + local notifications
-  screens/
-    notificaciones_screen.dart       — Historial + NotificacionLocal + NotificacionesDB
-  widgets/
-    notif_detalle_dialog.dart        — NotifDetalleDialog + parsearCuerpoNotif() (compartido)
-  helpers/
-    device_uuid.dart                 — UUID único del dispositivo
-
-android/app/src/main/
-  kotlin/.../MainActivity.kt         — MethodChannel: getPhoneNumber, requestPhonePermission,
-                                       openSimSettings
-  AndroidManifest.xml                — Permisos: INTERNET, POST_NOTIFICATIONS,
-                                       READ_PHONE_STATE, READ_PHONE_NUMBERS
-```
-
-### Widget compartido: NotifDetalleDialog
-
-**Archivo:** `lib/widgets/notif_detalle_dialog.dart`
-Exporta:
-- `parsearCuerpoNotif(cuerpo, {empresaFallback, servidorFallback})` → `NotifDetalleData`
-- `NotifDetalleDialog` — diálogo con tarjetas empresa/servidor + campos del formulario
-
-`esFactura = data.containsKey('nombre') || data.containsKey('dui')`
-
-Usado en: `main.dart` (push tap) y `notificaciones_screen.dart` (historial tap)
-
-### Badge (notificaciones no leídas)
-- `NotificacionesDB.marcarComoVistas()` → actualiza timestamp `notif_vista_en`
-- `NotificacionesDB.contarNoVistas()` → cuenta notificaciones más recientes que el timestamp
-- Badge baja cuando: se abre historial O se cierra el diálogo de detalle push
-
-### SnackBar en foreground
-**NO** mostrar `cuerpo` directo (es JSON crudo). Parsear con `parsearCuerpoNotif(cuerpo)` y mostrar:
-```
-Empresa — Nombre cliente
-```
-
-### Confirmación de envío
-- Éxito: SnackBar verde `✓ Notificación enviada a XXXXXXXX`
-- Error: SnackBar rojo `✗ Error al enviar: <mensaje>`
-- Sin celular_propio: SnackBar naranja `⚠ Configura "Mi número celular"...`
-
----
-
-## Backend — Endpoints API
-
-### Públicos (app móvil, sin auth)
-```
-POST /api/v1/clientes/registrar-dispositivo
-  Body: {registro_iva, numero_celular, nombre_usuario, nombre_servidor,
-         device_uuid, fcm_token, plataforma, version_app}
-  Llave única: (empresa_id, numero_celular) → updateOrCreate
-
-POST /api/v1/clientes/enviar-datos
-  Body: {registro_iva, numero_destino, titulo, cuerpo}
-  Busca: clientes_empresa WHERE numero_celular = numero_destino
-
-POST /api/v1/clientes/confirmar-recepcion
-  Body: {mensaje_id, registro_iva, numero_celular, device_uuid}
-  Marca `recepcion_confirmada_at` cuando el destinatario abre el detalle
-```
-
-### Protegidos (Sanctum, panel web)
-```
-POST   /api/v1/auth/login
-POST   /api/v1/auth/logout
-GET    /api/v1/auth/me
-
-GET    /api/v1/dashboard
-GET    /api/v1/empresas          — lista, con clientes:nombre_servidor
-POST   /api/v1/empresas
-PUT    /api/v1/empresas/{id}
-DELETE /api/v1/empresas/{id}
-
-GET    /api/v1/clientes          — lista con empresa eager loaded
-
-POST   /api/v1/mensajes/enviar
-GET    /api/v1/mensajes/historial?registro_iva&estado&fecha_desde&fecha_hasta&search&page
-GET    /api/v1/mensajes/nuevos?desde=<ISO>  — para polling tiempo real
-```
-
----
-
-## Frontend web — Páginas
-
-| Ruta | Descripción |
-|---|---|
-| `/login` | Autenticación admin |
-| `/dashboard` | Estadísticas generales |
-| `/empresas` | CRUD empresas + Servidor(es) como badges |
-| `/clientes` | Lista dispositivos con empresa y nombre_servidor |
-| `/mensajes` | Historial + enviar modal + ModalDetalle con campos JSON |
-
-### Notificaciones en tiempo real
-- `NotifContext.jsx` — polling 20s, badge global, Web Notifications API
-- `Layout.jsx` — campanita con badge rojo
-- `Mensajes.jsx` — banner de nuevos mensajes + auto-refresh
-
----
-
-## Estado actual — Lo que YA funciona
-
-### App móvil
-- [x] Envía datos al backend vía HTTP
-- [x] Registro de dispositivo con `celular_propio` (nunca con `celularserver`)
-- [x] Si `celular_propio` vacío: NO registra + aviso naranja al usuario
-- [x] Notificación push llega al teléfono DESTINO (no al operador)
-- [x] Al enviar: SnackBar confirma "✓ Notificación enviada a XXXXXXXX"
-- [x] Al tocar notificación: diálogo con campos formateados (empresa, servidor, DUI, IVA, giro…)
-- [x] Al cerrar diálogo: badge decrementado
-- [x] SnackBar en foreground muestra info parseada (`Empresa — Nombre cliente`), NO JSON crudo
-- [x] Historial: lista con empresa, servidor, nombre, concepto; tap → mismo diálogo que push
-- [x] Botón 📱 en config para obtener número propio (copia al portapapeles si puede leerlo, abre Ajustes si no)
-- [x] FCM token refresh automático (solo si celular_propio configurado)
-
-### App mÃ³vil â€” recepciÃ³n confirmada
-- [x] Al abrir el detalle de una notificaciÃ³n, confirma recepciÃ³n al backend con `mensaje_id`
-
-### Backend
-- [x] Registra/actualiza dispositivos (llave: empresa_id + numero_celular)
-- [x] Busca destinatario por numero_celular == numero_destino
-- [x] Envía FCM al token correcto
-- [x] Historial con filtros y paginación
-- [x] Endpoint `/mensajes/nuevos` para polling
-- [x] CRUD empresas con servers registrados
-
-### Panel web
-- [x] Login, dashboard, empresas, clientes, mensajes
-- [x] Polling tiempo real (badge + notificación navegador)
-- [x] ModalDetalle con campos JSON formateados
-- [x] nombre_servidor en Clientes y Empresas
-
----
-
-## Lo que FALTA / Pendiente
-
-- [ ] **Múltiples destinos**: operador solo puede enviar a UN número destino
-- [ ] **Modo offline**: sin internet los datos se pierden
-- [ ] **Push web (PWA)**: notificaciones del navegador solo funcionan con panel abierto
-
----
-
-## Cómo correr el proyecto localmente
-
-### Backend Laravel
-```bash
-cd D:\Desarrollo_Flutter\push_cliente\backend
-C:\xampp\php\php.exe artisan serve --host=0.0.0.0 --port=8000
-```
-
-### Frontend React
-```bash
-cd D:\Desarrollo_Flutter\push_cliente\frontend
-npm run dev -- --port 5200
-# http://localhost:5200 — admin@pushcliente.com / Admin1234!
-```
-
-### App Flutter
-```bash
-cd D:\Desarrollo_Flutter\clientes\app_clientes
-C:\Users\julio\AppData\Local\Programs\flutter\bin\flutter.bat build apk --release
-# APK → build\app\outputs\flutter-apk\app-release.apk
-# Copia → D:\Desarrollo_Flutter\clientes\facturame.apk
-```
-
-### Instalar APK en dispositivo
-```bash
-C:\Users\julio\AppData\Local\Android\Sdk\platform-tools\adb.exe devices
-C:\Users\julio\AppData\Local\Android\Sdk\platform-tools\adb.exe -s R5CY11ZPTDJ install -r D:\Desarrollo_Flutter\clientes\facturame.apk
-```
-
----
-
-## Variables de entorno
-
-### Backend `.env`
-```
-DB_CONNECTION=pgsql
-DB_HOST=127.0.0.1
-DB_PORT=5432
-DB_DATABASE=push_cliente
-DB_USERNAME=sigaerp_user
-DB_PASSWORD=sigaerp_pass
-FRONTEND_URL=http://localhost:5200
-FIREBASE_CREDENTIALS=storage/app/firebase-credentials.json
-FIREBASE_PROJECT_ID=<id del proyecto Firebase>
-```
-
-### Frontend `.env.local`
-```
-VITE_API_URL=http://127.0.0.1:8000/api/v1
-```
-
-### Firebase
-- Backend: `backend/storage/app/firebase-credentials.json`
-- Android: `android/app/google-services.json`
-
----
-
-## Notas técnicas importantes
-
-1. **Docker puerto 8000**: usar `127.0.0.1:8000` no `localhost:8000` (IPv6).
-
-2. **`ilike` PostgreSQL**: usar `ilike` para búsquedas, no `like`.
-
-3. **Canal FCM Android**: crear `facturame_channel` con `Importance.HIGH` en código Dart, no solo AndroidManifest.
-
-4. **Modelo AdminUser**: autenticación web usa `App\Models\AdminUser`, NO `App\Models\User`.
-
-5. **Parseo JSON notificación**: `cuerpo` es string JSON. Parsear con `parsearCuerpoNotif(cuerpo)` de `widgets/notif_detalle_dialog.dart`. `empresa` y `servidor` están al nivel raíz; los datos de factura en `json['data']`.
-
-6. **celular_propio NUNCA puede ser celularserver**: el bug histórico era usar el número destino como número propio. Esto sobreescribía el FCM token del jefe con el del operador.
-
-7. **esFactura (Flutter y frontend web)**: `data.containsKey('nombre') || data.containsKey('dui')`.
-
-8. **SIM no expone número**: en muchos operadores de Centroamérica `TelephonyManager.getLine1Number()` devuelve null. Se usa `SubscriptionManager` como fallback. Si ambos fallan, se abre Settings para que el usuario lo vea y escriba manualmente.
-
-9. **Badge app móvil**: timestamp `notif_vista_en` en SharedPrefs. Se resetea al abrir historial o al cerrar diálogo de detalle push.
-
-10. **SnackBar foreground**: NO mostrar `cuerpo` directo (es JSON crudo). Usar `parsearCuerpoNotif(cuerpo)` y mostrar `'${p.empresa} — ${p.data['nombre']}'`.
-
-11. **NotifDetalleDialog**: widget compartido en `lib/widgets/notif_detalle_dialog.dart`. Usado tanto al tocar una notificación push como al tocar un ítem del historial.
-
-12. **Throttle endpoints públicos**: `registrar-dispositivo` = 30/min, `enviar-datos` = 30/min, `auth/login` = 10/min.
-
-13. **Credenciales admin por defecto (seeder)**: `admin@pushcliente.com` / `Admin1234!`, empresa demo registro_iva `12345-6`.
+- El mensaje debe mostrarse aunque provenga de otra empresa, porque el criterio de entrega ahora es el numero del telefono.
+- Si un telefono esta registrado en varias empresas, puede recibir mensajes de todas ellas.
+- La empresa y el servidor que se muestran al usuario deben salir del JSON recibido, no del contexto local de configuracion.
+- Si se recompila APK final, debe apuntar a `https://facturame.appsigasv.com`.
