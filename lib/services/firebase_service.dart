@@ -1,42 +1,71 @@
 import 'dart:async';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
+const _channelId   = 'facturame_channel';
+const _channelName = 'Facturame Notificaciones';
+
+final FlutterLocalNotificationsPlugin _localNotif =
+    FlutterLocalNotificationsPlugin();
 
 /// Handler de mensajes en background/terminado — debe ser función top-level.
 @pragma('vm:entry-point')
 Future<void> _firebaseBackgroundHandler(RemoteMessage message) async {
-  // Firebase ya está inicializado en este punto.
   debugPrint('[FCM] Background: ${message.messageId}');
 }
 
+/// Callback top-level requerido por flutter_local_notifications.
+@pragma('vm:entry-point')
+void _onLocalNotifResponse(NotificationResponse response) {
+  final payload = response.payload ?? '';
+  FirebaseService._localTapCtrl.add(payload);
+}
+
 /// Servicio centralizado de Firebase Cloud Messaging.
-///
-/// Expone dos streams:
-/// - [onForegroundMessage]: notificaciones recibidas con la app abierta.
-/// - [onNotificationTap]: notificaciones que el usuario tocó (background/terminado).
 class FirebaseService {
   FirebaseService._();
 
   static final _messaging = FirebaseMessaging.instance;
 
-  // ── Streams ──────────────────────────────────────────────────────────────────
   static final _foregroundCtrl =
       StreamController<RemoteMessage>.broadcast();
   static final _tapCtrl =
       StreamController<RemoteMessage>.broadcast();
 
-  /// Stream de notificaciones recibidas con la app en foreground.
+  // Stream para taps en notificaciones locales (foreground).
+  // El payload es el cuerpo del mensaje (JSON string).
+  static final _localTapCtrl = StreamController<String>.broadcast();
+
   static Stream<RemoteMessage> get onForegroundMessage =>
       _foregroundCtrl.stream;
-
-  /// Stream de notificaciones que el usuario tocó desde background o estado
-  /// terminado. Preparado para navegación futura.
   static Stream<RemoteMessage> get onNotificationTap => _tapCtrl.stream;
+  static Stream<String> get onLocalNotificationTap => _localTapCtrl.stream;
 
-  // ── Inicialización ────────────────────────────────────────────────────────────
-
-  /// Inicializa FCM: permisos, handlers de background, foreground y tap.
   static Future<void> initialize() async {
+    // ── Crear canal Android con importancia ALTA ───────────────────────────
+    const androidChannel = AndroidNotificationChannel(
+      _channelId,
+      _channelName,
+      importance: Importance.high,
+      playSound: true,
+      enableVibration: true,
+    );
+
+    await _localNotif
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(androidChannel);
+
+    // Inicializar plugin con callback de tap.
+    const initSettings = InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    );
+    await _localNotif.initialize(
+      initSettings,
+      onDidReceiveNotificationResponse: _onLocalNotifResponse,
+    );
+
     // Handler de mensajes cuando la app está en background/terminada.
     FirebaseMessaging.onBackgroundMessage(_firebaseBackgroundHandler);
 
@@ -48,37 +77,53 @@ class FirebaseService {
     );
     debugPrint('[FCM] Permission: ${settings.authorizationStatus}');
 
-    // Mensajes recibidos con la app en foreground.
+    // Mensajes en foreground → mostrar notificación local con payload.
     FirebaseMessaging.onMessage.listen((message) {
-      debugPrint(
-          '[FCM] Foreground: ${message.notification?.title} — ${message.notification?.body}');
+      debugPrint('[FCM] Foreground: ${message.notification?.title}');
+      _mostrarNotificacionLocal(message);
       _foregroundCtrl.add(message);
     });
 
-    // App estaba en background y el usuario tocó la notificación.
+    // App en background → usuario tocó la notificación.
     FirebaseMessaging.onMessageOpenedApp.listen((message) {
       debugPrint('[FCM] Opened from background: ${message.notification?.title}');
       _tapCtrl.add(message);
     });
 
-    // App estaba terminada y el usuario tocó la notificación para abrirla.
+    // App terminada → usuario tocó la notificación.
     final initial = await _messaging.getInitialMessage();
     if (initial != null) {
-      debugPrint(
-          '[FCM] Opened from terminated: ${initial.notification?.title}');
-      // Delay para asegurar que la UI esté lista antes de emitir.
       Future.delayed(const Duration(milliseconds: 1500),
           () => _tapCtrl.add(initial));
     }
   }
 
-  // ── Token ────────────────────────────────────────────────────────────────────
+  static void _mostrarNotificacionLocal(RemoteMessage message) {
+    final n = message.notification;
+    if (n == null) return;
 
-  /// Devuelve el token FCM actual del dispositivo, o null si no está disponible.
+    // Usamos el body del mensaje como payload para mostrarlo al tocar.
+    final payload = n.body ?? '';
+
+    _localNotif.show(
+      message.hashCode,
+      n.title,
+      n.body,
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          _channelId,
+          _channelName,
+          importance: Importance.high,
+          priority: Priority.high,
+          playSound: true,
+        ),
+      ),
+      payload: payload,
+    );
+  }
+
   static Future<String?> getToken() => _messaging.getToken();
 
-  /// Registra un callback que se invoca cada vez que el token FCM cambia.
-  /// Esto ocurre cuando Firebase rota el token por seguridad.
   static void onTokenRefresh(void Function(String newToken) callback) {
     _messaging.onTokenRefresh.listen(callback);
   }

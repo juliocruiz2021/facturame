@@ -8,18 +8,26 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'services/api_service.dart';
 import 'services/firebase_service.dart';
 import 'helpers/device_uuid.dart';
+import 'screens/notificaciones_screen.dart';
 
 // ─── Constantes de configuración ──────────────────────────────────────────────
-const String _kDefaultBackendUrl    = 'http://10.0.2.2:8000';
+const String _kDefaultBackendUrl    = 'http://192.168.1.10:8000';
 const String _kDefaultNombreEmpresa = 'EMPRESA DE PRUEBA';
-const String _kDefaultNumRegistro   = '';
+const String _kDefaultNumRegistro   = '12345-6';
 const String _kDefaultNombreServidor= 'SIGA1';
 const String _kDefaultCelularDest   = '63092051';
+const String _kDefaultMiCelular     = '';       // número propio de este teléfono
 const String _kDefaultNombreUsuario = 'OPERADOR';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+  try {
+    await Firebase.initializeApp();
+  } catch (_) {
+    // Firebase no disponible (falta google-services.json real).
+    // La app funciona sin push; las notificaciones se activarán
+    // cuando se coloque el archivo correcto y se recompile.
+  }
   runApp(const AppClientes());
 }
 
@@ -163,15 +171,17 @@ class _FormularioScreenState extends State<FormularioScreen> {
   Contacto? _contactoOriginal;
   bool _esContactoExistente      = false;
   bool _isSending                = false;
-
   StreamSubscription<RemoteMessage>? _foregroundSub;
   StreamSubscription<RemoteMessage>? _tapSub;
+  StreamSubscription<String>? _localTapSub;
+  int _unreadCount = 0;
 
   String _backendUrl     = _kDefaultBackendUrl;
   String _nombreEmpresa  = _kDefaultNombreEmpresa;
   String _numRegistro    = _kDefaultNumRegistro;
   String _nombreServidor = _kDefaultNombreServidor;
   String _celularDest    = _kDefaultCelularDest;
+  String _miCelular      = _kDefaultMiCelular;   // número propio de este teléfono
   String _nombreUsuario  = _kDefaultNombreUsuario;
 
   @override
@@ -181,12 +191,19 @@ class _FormularioScreenState extends State<FormularioScreen> {
     _cargarConfiguracion();
     _nombresCtrl.addListener(_filtrarSugerencias);
     _inicializarPush();
+    _actualizarBadge();
+  }
+
+  Future<void> _actualizarBadge() async {
+    final count = await NotificacionesDB.contarNoVistas();
+    if (mounted) setState(() => _unreadCount = count);
   }
 
   @override
   void dispose() {
     _foregroundSub?.cancel();
     _tapSub?.cancel();
+    _localTapSub?.cancel();
     _nombresCtrl.removeListener(_filtrarSugerencias);
     for (final c in [_nombresCtrl, _duiCtrl, _ivaCtrl, _giroCtrl,
         _direccionCtrl, _celularCtrl, _emailCtrl, _conceptoCtrl, _montoCtrl]) {
@@ -207,13 +224,18 @@ class _FormularioScreenState extends State<FormularioScreen> {
   Future<void> _cargarConfiguracion() async {
     final prefs = await SharedPreferences.getInstance();
     if (mounted) {
+      String _pref(String key, String def) {
+        final v = prefs.getString(key) ?? '';
+        return v.isNotEmpty ? v : def;
+      }
       setState(() {
-        _backendUrl    = prefs.getString('backend_url')      ?? _kDefaultBackendUrl;
-        _nombreEmpresa = prefs.getString('nombre_empresa')   ?? _kDefaultNombreEmpresa;
-        _numRegistro   = prefs.getString('num_registro')     ?? _kDefaultNumRegistro;
-        _nombreServidor= prefs.getString('nombre_servidor')  ?? _kDefaultNombreServidor;
-        _celularDest   = prefs.getString('celularserver')    ?? _kDefaultCelularDest;
-        _nombreUsuario = prefs.getString('nombre_usuario')   ?? _kDefaultNombreUsuario;
+        _backendUrl    = _pref('backend_url',     _kDefaultBackendUrl);
+        _nombreEmpresa = _pref('nombre_empresa',  _kDefaultNombreEmpresa);
+        _numRegistro   = _pref('num_registro',    _kDefaultNumRegistro);
+        _nombreServidor= _pref('nombre_servidor', _kDefaultNombreServidor);
+        _celularDest   = _pref('celularserver',   _kDefaultCelularDest);
+        _miCelular     = _pref('celular_propio',  _kDefaultMiCelular);
+        _nombreUsuario = _pref('nombre_usuario',  _kDefaultNombreUsuario);
       });
     }
   }
@@ -227,6 +249,10 @@ class _FormularioScreenState extends State<FormularioScreen> {
         if (!mounted) return;
         final titulo = msg.notification?.title ?? 'Notificación';
         final cuerpo = msg.notification?.body  ?? '';
+        // Guardar en historial y actualizar badge
+        NotificacionesDB.guardar(NotificacionLocal(
+          titulo: titulo, cuerpo: cuerpo, fecha: DateTime.now()));
+        _actualizarBadge();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Column(
@@ -247,11 +273,20 @@ class _FormularioScreenState extends State<FormularioScreen> {
         );
       });
 
-      // ── Subscripción a toque de notificación ──────────────────────────────
-      // Preparado para navegación futura: aquí se puede agregar Navigator.push
+      // ── Toque en notificación (background/terminado) ───────────────────────
       _tapSub = FirebaseService.onNotificationTap.listen((msg) {
-        // TODO: navegar a pantalla relevante según msg.data
-        debugPrint('[FCM] Tap: ${msg.notification?.title} | data: ${msg.data}');
+        if (!mounted) return;
+        _mostrarDetalleNotificacion(
+          msg.notification?.title ?? 'Notificación',
+          msg.notification?.body  ?? '',
+        );
+      });
+
+      // ── Toque en notificación local (foreground) ───────────────────────────
+      _localTapSub = FirebaseService.onLocalNotificationTap.listen((payload) {
+        if (!mounted) return;
+        _mostrarDetalleNotificacion('Solicitud recibida', payload);
+
       });
 
       // ── Obtener y registrar token ──────────────────────────────────────────
@@ -260,33 +295,44 @@ class _FormularioScreenState extends State<FormularioScreen> {
 
       final uuid    = await DeviceUuid.getOrCreate();
       final prefs   = await SharedPreferences.getInstance();
-      final regIva  = prefs.getString('num_registro')   ?? _kDefaultNumRegistro;
-      final celDest = prefs.getString('celularserver')  ?? _kDefaultCelularDest;
-      final usuario = prefs.getString('nombre_usuario') ?? _kDefaultNombreUsuario;
-      final url     = prefs.getString('backend_url')    ?? _kDefaultBackendUrl;
+      String _p(String k, String d) { final v = prefs.getString(k) ?? ''; return v.isNotEmpty ? v : d; }
+      final regIva   = _p('num_registro',   _kDefaultNumRegistro);
+      final celDest  = _p('celularserver',  _kDefaultCelularDest);
+      // miCelular: número propio de este teléfono.
+      // Si no está configurado, usa celularDest como antes (compatibilidad).
+      final miCel    = _p('celular_propio', '');
+      final numPropio = miCel.isNotEmpty ? miCel : celDest;
+      final usuario  = _p('nombre_usuario', _kDefaultNombreUsuario);
+      final url      = _p('backend_url',    _kDefaultBackendUrl);
 
       // Solo registrar si el registro IVA está configurado.
       if (regIva.isEmpty) return;
 
       final api = ApiService(url);
       await api.registrarDispositivo(
-        registroIva:   regIva,
-        numeroCelular: celDest,
-        nombreUsuario: usuario,
-        deviceUuid:    uuid,
-        fcmToken:      token,
+        registroIva:    regIva,
+        numeroCelular:  numPropio,
+        nombreUsuario:  usuario,
+        nombreServidor: _p('nombre_servidor', _kDefaultNombreServidor),
+        deviceUuid:     uuid,
+        fcmToken:       token,
       );
 
       // ── Refrescar token automáticamente cuando Firebase lo rote ───────────
       FirebaseService.onTokenRefresh((newToken) async {
         final p2  = await SharedPreferences.getInstance();
         final api2 = ApiService(p2.getString('backend_url') ?? _kDefaultBackendUrl);
+        final miCel2 = p2.getString('celular_propio') ?? '';
+        final numPropio2 = miCel2.isNotEmpty
+            ? miCel2
+            : (p2.getString('celularserver') ?? _kDefaultCelularDest);
         await api2.registrarDispositivo(
-          registroIva:   p2.getString('num_registro')   ?? '',
-          numeroCelular: p2.getString('celularserver')  ?? _kDefaultCelularDest,
-          nombreUsuario: p2.getString('nombre_usuario') ?? _kDefaultNombreUsuario,
-          deviceUuid:    await DeviceUuid.getOrCreate(),
-          fcmToken:      newToken,
+          registroIva:    p2.getString('num_registro')    ?? '',
+          numeroCelular:  numPropio2,
+          nombreUsuario:  p2.getString('nombre_usuario')  ?? _kDefaultNombreUsuario,
+          nombreServidor: p2.getString('nombre_servidor') ?? _kDefaultNombreServidor,
+          deviceUuid:     await DeviceUuid.getOrCreate(),
+          fcmToken:       newToken,
         );
       });
     } catch (_) {
@@ -294,176 +340,91 @@ class _FormularioScreenState extends State<FormularioScreen> {
     }
   }
 
-  Future<void> _abrirConfiguracion() async {
-    final ctrlBackend  = TextEditingController(text: _backendUrl);
-    final ctrlEmpresa  = TextEditingController(text: _nombreEmpresa);
-    final ctrlRegistro = TextEditingController(text: _numRegistro);
-    final ctrlServidor = TextEditingController(text: _nombreServidor);
-    final ctrlCelular  = TextEditingController(text: _celularDest);
-    final ctrlUsuario  = TextEditingController(text: _nombreUsuario);
+  void _mostrarDetalleNotificacion(String titulo, String cuerpo) {
+    // Guardar en historial y actualizar badge
+    NotificacionesDB.guardar(NotificacionLocal(
+      titulo: titulo, cuerpo: cuerpo, fecha: DateTime.now()));
+    _actualizarBadge();
 
-    final guardado = await showDialog<bool>(
+    // Parsear JSON del cuerpo
+    Map<String, dynamic> data = {};
+    String empresa  = _nombreEmpresa;
+    String servidor = _nombreServidor;
+    try {
+      final json = jsonDecode(cuerpo) as Map<String, dynamic>;
+      // Empresa y servidor vienen en el JSON enviado por el operador
+      empresa  = (json['empresa']  as String?) ?? _nombreEmpresa;
+      servidor = (json['servidor'] as String?) ?? _nombreServidor;
+      data = (json['data'] as Map<String, dynamic>?) ?? json;
+    } catch (_) {}
+
+    // Mostrar diálogo con los datos
+    showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: const Row(children: [
-          Icon(Icons.settings, color: Color(0xFF25D366)),
-          SizedBox(width: 8),
-          Text('Configuración', style: TextStyle(fontSize: 15)),
-        ]),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('URL del backend:', style: TextStyle(fontSize: 13)),
-              const SizedBox(height: 6),
-              TextField(
-                controller: ctrlBackend,
-                keyboardType: TextInputType.url,
-                style: const TextStyle(fontSize: 13),
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: 'http://192.168.1.x:8000',
-                  isDense: true,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                ),
-              ),
-              const SizedBox(height: 14),
-              const Text('Nombre de empresa:', style: TextStyle(fontSize: 13)),
-              const SizedBox(height: 6),
-              TextField(
-                controller: ctrlEmpresa,
-                textCapitalization: TextCapitalization.characters,
-                style: const TextStyle(fontSize: 14),
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: 'EMPRESA DE PRUEBA',
-                  isDense: true,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                ),
-              ),
-              const SizedBox(height: 14),
-              const Text('Nombre de servidor:', style: TextStyle(fontSize: 13)),
-              const SizedBox(height: 6),
-              TextField(
-                controller: ctrlServidor,
-                textCapitalization: TextCapitalization.characters,
-                style: const TextStyle(fontSize: 14),
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: 'SIGA1',
-                  isDense: true,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                ),
-              ),
-              const SizedBox(height: 14),
-              const Text('Número de registro empresa:', style: TextStyle(fontSize: 13)),
-              const SizedBox(height: 6),
-              TextField(
-                controller: ctrlRegistro,
-                textCapitalization: TextCapitalization.characters,
-                style: const TextStyle(fontSize: 14),
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: 'Ej: 12345-6',
-                  isDense: true,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                ),
-              ),
-              const SizedBox(height: 14),
-              const Text('Número destino (notificaciones):', style: TextStyle(fontSize: 13)),
-              const SizedBox(height: 6),
-              TextField(
-                controller: ctrlCelular,
-                keyboardType: TextInputType.phone,
-                style: const TextStyle(fontSize: 14),
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: '63092051',
-                  isDense: true,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                ),
-                inputFormatters: [
-                  FilteringTextInputFormatter.digitsOnly,
-                  LengthLimitingTextInputFormatter(8),
-                ],
-              ),
-              const SizedBox(height: 4),
-              const Text('Número del operador que recibirá las notificaciones',
-                  style: TextStyle(fontSize: 11, color: Colors.grey)),
-              const SizedBox(height: 14),
-              const Text('Nombre de usuario:', style: TextStyle(fontSize: 13)),
-              const SizedBox(height: 6),
-              TextField(
-                controller: ctrlUsuario,
-                textCapitalization: TextCapitalization.characters,
-                style: const TextStyle(fontSize: 14),
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: 'OPERADOR',
-                  isDense: true,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancelar', style: TextStyle(fontSize: 13)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF25D366),
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Guardar', style: TextStyle(fontSize: 13)),
-          ),
-        ],
+      builder: (_) => _NotifDetalleDialog(
+        titulo:    titulo,
+        empresa:   empresa,
+        servidor:  servidor,
+        data:      data,
+        cuerpoRaw: cuerpo,
+      ),
+    );
+  }
+
+  Future<void> _abrirConfiguracion() async {
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (_) => _ConfigDialog(
+        backendUrl:    _backendUrl,
+        nombreEmpresa: _nombreEmpresa,
+        numRegistro:   _numRegistro,
+        nombreServidor: _nombreServidor,
+        celularDest:   _celularDest,
+        miCelular:     _miCelular,
+        nombreUsuario: _nombreUsuario,
       ),
     );
 
-    final backendNuevo  = ctrlBackend.text.trim();
-    final empresaNueva  = ctrlEmpresa.text.trim().toUpperCase();
-    final registroNuevo = ctrlRegistro.text.trim().toUpperCase();
-    final servidorNuevo = ctrlServidor.text.trim().toUpperCase();
-    final celularNuevo  = ctrlCelular.text.trim();
-    final usuarioNuevo  = ctrlUsuario.text.trim().toUpperCase();
-    ctrlBackend.dispose();
-    ctrlEmpresa.dispose();
-    ctrlRegistro.dispose();
-    ctrlServidor.dispose();
-    ctrlCelular.dispose();
-    ctrlUsuario.dispose();
+    if (result == null || !mounted) return;
 
-    if (guardado == true && mounted) {
-      final prefs = await SharedPreferences.getInstance();
-      if (backendNuevo.isNotEmpty) {
-        await prefs.setString('backend_url', backendNuevo);
-        setState(() => _backendUrl = backendNuevo);
-      }
-      if (empresaNueva.isNotEmpty) {
-        await prefs.setString('nombre_empresa', empresaNueva);
-        setState(() => _nombreEmpresa = empresaNueva);
-      }
+    final prefs = await SharedPreferences.getInstance();
+    final backendNuevo  = result['backend_url']      ?? '';
+    final empresaNueva  = result['nombre_empresa']   ?? '';
+    final registroNuevo = result['num_registro']     ?? '';
+    final servidorNuevo = result['nombre_servidor']  ?? '';
+    final celularNuevo  = result['celularserver']    ?? '';
+    final miCelNuevo    = result['celular_propio']   ?? '';
+    final usuarioNuevo  = result['nombre_usuario']   ?? '';
+
+    if (backendNuevo.isNotEmpty) {
+      await prefs.setString('backend_url', backendNuevo);
+      setState(() => _backendUrl = backendNuevo);
+    }
+    if (empresaNueva.isNotEmpty) {
+      await prefs.setString('nombre_empresa', empresaNueva);
+      setState(() => _nombreEmpresa = empresaNueva);
+    }
+    if (registroNuevo.isNotEmpty) {
       await prefs.setString('num_registro', registroNuevo);
       setState(() => _numRegistro = registroNuevo);
-      if (servidorNuevo.isNotEmpty) {
-        await prefs.setString('nombre_servidor', servidorNuevo);
-        setState(() => _nombreServidor = servidorNuevo);
-      }
-      if (celularNuevo.isNotEmpty) {
-        await prefs.setString('celularserver', celularNuevo);
-        setState(() => _celularDest = celularNuevo);
-      }
-      if (usuarioNuevo.isNotEmpty) {
-        await prefs.setString('nombre_usuario', usuarioNuevo);
-        setState(() => _nombreUsuario = usuarioNuevo);
-      }
     }
+    if (servidorNuevo.isNotEmpty) {
+      await prefs.setString('nombre_servidor', servidorNuevo);
+      setState(() => _nombreServidor = servidorNuevo);
+    }
+    if (celularNuevo.isNotEmpty) {
+      await prefs.setString('celularserver', celularNuevo);
+      setState(() => _celularDest = celularNuevo);
+    }
+    await prefs.setString('celular_propio', miCelNuevo);
+    setState(() => _miCelular = miCelNuevo);
+    if (usuarioNuevo.isNotEmpty) {
+      await prefs.setString('nombre_usuario', usuarioNuevo);
+      setState(() => _nombreUsuario = usuarioNuevo);
+    }
+
+    // Re-registrar dispositivo con la nueva configuración
+    unawaited(_inicializarPush());
   }
 
   void _filtrarSugerencias() {
@@ -776,15 +737,62 @@ class _FormularioScreenState extends State<FormularioScreen> {
             tooltip: 'Configuración',
           ),
           actions: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.notifications_outlined, color: Colors.white),
+                  tooltip: 'Historial de notificaciones',
+                  onPressed: () async {
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const NotificacionesScreen()),
+                    );
+                    _actualizarBadge();
+                  },
+                ),
+                if (_unreadCount > 0)
+                  Positioned(
+                    right: 6,
+                    top: 6,
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                      decoration: const BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Text(
+                        _unreadCount > 99 ? '99+' : '$_unreadCount',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            TextButton.icon(
+                icon: _isSending
+                    ? const SizedBox(
+                        width: 16, height: 16,
+                        child: CircularProgressIndicator(
+                            color: Colors.white, strokeWidth: 2))
+                    : const Icon(Icons.send, color: Colors.white, size: 18),
+                label: Text(
+                  _isSending ? 'Enviando...' : 'Enviar',
+                  style: const TextStyle(color: Colors.white, fontSize: 14),
+                ),
+                onPressed: _isSending ? null : _confirmarYEnviar,
+              ),
             IconButton(
-              icon: _isSending
-                  ? const SizedBox(
-                      width: 20, height: 20,
-                      child: CircularProgressIndicator(
-                          color: Colors.white, strokeWidth: 2))
-                  : const Icon(Icons.send, color: Colors.white),
-              onPressed: _isSending ? null : _confirmarYEnviar,
-              tooltip: 'Enviar',
+              icon: const Icon(Icons.logout, color: Colors.white),
+              tooltip: 'Cerrar app',
+              onPressed: () => SystemNavigator.pop(),
             ),
           ],
         ),
@@ -1036,35 +1044,6 @@ class _FormularioScreenState extends State<FormularioScreen> {
                           return null;
                         },
                       ),
-                      const SizedBox(height: 20),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 46,
-                        child: ElevatedButton.icon(
-                          onPressed: _isSending ? null : _confirmarYEnviar,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF25D366),
-                            foregroundColor: Colors.white,
-                            disabledBackgroundColor:
-                                const Color(0xFF25D366).withValues(alpha: 0.6),
-                            disabledForegroundColor: Colors.white70,
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10)),
-                            elevation: 3,
-                          ),
-                          icon: _isSending
-                              ? const SizedBox(
-                                  width: 16, height: 16,
-                                  child: CircularProgressIndicator(
-                                      color: Colors.white, strokeWidth: 2))
-                              : const Icon(Icons.send, size: 18),
-                          label: Text(
-                            _isSending ? 'Enviando...' : 'Enviar',
-                            style: const TextStyle(
-                                fontSize: 15, fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                      ),
                       const SizedBox(height: 10),
                     ],
                   ),
@@ -1108,5 +1087,422 @@ class _UpperCaseFormatter extends TextInputFormatter {
     return v.copyWith(
         text: upper,
         selection: TextSelection.collapsed(offset: upper.length));
+  }
+}
+
+// ─── Diálogo de configuración ─────────────────────────────────────────────────
+class _ConfigDialog extends StatefulWidget {
+  final String backendUrl, nombreEmpresa, numRegistro,
+               nombreServidor, celularDest, miCelular, nombreUsuario;
+
+  const _ConfigDialog({
+    required this.backendUrl,
+    required this.nombreEmpresa,
+    required this.numRegistro,
+    required this.nombreServidor,
+    required this.celularDest,
+    required this.miCelular,
+    required this.nombreUsuario,
+  });
+
+  @override
+  State<_ConfigDialog> createState() => _ConfigDialogState();
+}
+
+class _ConfigDialogState extends State<_ConfigDialog> {
+  static const _channel = MethodChannel('facturame/device_info');
+
+  late final TextEditingController _ctrlBackend;
+  late final TextEditingController _ctrlEmpresa;
+  late final TextEditingController _ctrlRegistro;
+  late final TextEditingController _ctrlServidor;
+  late final TextEditingController _ctrlCelular;
+  late final TextEditingController _ctrlMiCelular;
+  late final TextEditingController _ctrlUsuario;
+  bool _numeroCelularLeido = false; // true = se leyó del SIM, campo bloqueado
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrlBackend   = TextEditingController(text: widget.backendUrl);
+    _ctrlEmpresa   = TextEditingController(text: widget.nombreEmpresa);
+    _ctrlRegistro  = TextEditingController(text: widget.numRegistro);
+    _ctrlServidor  = TextEditingController(text: widget.nombreServidor);
+    _ctrlCelular   = TextEditingController(text: widget.celularDest);
+    _ctrlMiCelular = TextEditingController(text: widget.miCelular);
+    _ctrlUsuario   = TextEditingController(text: widget.nombreUsuario);
+    // Solo intentar leer si no hay número configurado aún
+    if (widget.miCelular.isEmpty) _leerNumeroCelular();
+  }
+
+  Future<void> _leerNumeroCelular() async {
+    try {
+      // Solicitar permiso si no está otorgado
+      await _channel.invokeMethod('requestPhonePermission');
+      // Intentar leer el número
+      final numero = await _channel.invokeMethod<String>('getPhoneNumber');
+      if (numero != null && numero.isNotEmpty && mounted) {
+        // Limpiar prefijo internacional si viene con +503 etc.
+        final limpio = numero.replaceAll(RegExp(r'^\+\d{1,3}'), '').replaceAll(RegExp(r'\D'), '');
+        setState(() {
+          _ctrlMiCelular.text  = limpio;
+          _numeroCelularLeido  = true;
+        });
+      }
+    } catch (_) {
+      // El operador no expone el número — el campo queda editable
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrlBackend.dispose();
+    _ctrlEmpresa.dispose();
+    _ctrlRegistro.dispose();
+    _ctrlServidor.dispose();
+    _ctrlCelular.dispose();
+    _ctrlMiCelular.dispose();
+    _ctrlUsuario.dispose();
+    super.dispose();
+  }
+
+  void _guardar() {
+    Navigator.pop(context, {
+      'backend_url':     _ctrlBackend.text.trim(),
+      'nombre_empresa':  _ctrlEmpresa.text.trim().toUpperCase(),
+      'num_registro':    _ctrlRegistro.text.trim().toUpperCase(),
+      'nombre_servidor': _ctrlServidor.text.trim().toUpperCase(),
+      'celularserver':   _ctrlCelular.text.trim(),
+      'celular_propio':  _ctrlMiCelular.text.trim(),
+      'nombre_usuario':  _ctrlUsuario.text.trim().toUpperCase(),
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      titlePadding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+      contentPadding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+      title: const Row(children: [
+        Icon(Icons.settings, color: Color(0xFF25D366)),
+        SizedBox(width: 8),
+        Text('Configuración',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+      ]),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 8),
+            const Text('URL del backend:', style: TextStyle(fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _ctrlBackend,
+              keyboardType: TextInputType.url,
+              style: const TextStyle(fontSize: 13),
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'http://192.168.1.x:8000',
+                isDense: true,
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Text('Nombre de empresa:', style: TextStyle(fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _ctrlEmpresa,
+              textCapitalization: TextCapitalization.characters,
+              style: const TextStyle(fontSize: 14),
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'EMPRESA DE PRUEBA',
+                isDense: true,
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Text('Nombre de servidor:', style: TextStyle(fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _ctrlServidor,
+              textCapitalization: TextCapitalization.characters,
+              style: const TextStyle(fontSize: 14),
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'SIGA1',
+                isDense: true,
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Text('Número de registro empresa:',
+                style: TextStyle(fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _ctrlRegistro,
+              textCapitalization: TextCapitalization.characters,
+              style: const TextStyle(fontSize: 14),
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'Ej: 12345-6',
+                isDense: true,
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              ),
+            ),
+            const SizedBox(height: 14),
+            const Text('Número destino (notificaciones):',
+                style: TextStyle(fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _ctrlCelular,
+              keyboardType: TextInputType.phone,
+              style: const TextStyle(fontSize: 14),
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: '63092051',
+                isDense: true,
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              ),
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(8),
+              ],
+            ),
+            const SizedBox(height: 4),
+            const Text('Número del operador que recibirá las notificaciones',
+                style: TextStyle(fontSize: 11, color: Colors.grey)),
+            const SizedBox(height: 14),
+            Row(children: [
+              const Text('Mi número celular (este teléfono):',
+                  style: TextStyle(fontSize: 13)),
+              if (_numeroCelularLeido) ...[
+                const SizedBox(width: 6),
+                const Icon(Icons.sim_card, size: 14, color: Color(0xFF25D366)),
+                const SizedBox(width: 2),
+                const Text('leído del SIM',
+                    style: TextStyle(fontSize: 10, color: Color(0xFF25D366))),
+              ],
+            ]),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _ctrlMiCelular,
+              enabled: !_numeroCelularLeido,
+              keyboardType: TextInputType.phone,
+              style: const TextStyle(fontSize: 14),
+              decoration: InputDecoration(
+                border: const OutlineInputBorder(),
+                hintText: 'Número de este teléfono',
+                isDense: true,
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                filled: _numeroCelularLeido,
+                fillColor: _numeroCelularLeido
+                    ? const Color(0xFFE8F5E9)
+                    : null,
+                suffixIcon: _numeroCelularLeido
+                    ? const Icon(Icons.lock, size: 16, color: Color(0xFF25D366))
+                    : null,
+              ),
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(15),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _numeroCelularLeido
+                  ? 'Número detectado automáticamente del SIM'
+                  : 'Número con que este dispositivo se identifica en el sistema',
+              style: const TextStyle(fontSize: 11, color: Colors.grey),
+            ),
+            const SizedBox(height: 14),
+            const Text('Nombre de usuario:', style: TextStyle(fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: _ctrlUsuario,
+              textCapitalization: TextCapitalization.characters,
+              style: const TextStyle(fontSize: 14),
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'OPERADOR',
+                isDense: true,
+                contentPadding:
+                    EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancelar',
+                      style: TextStyle(fontSize: 13)),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: _guardar,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF25D366),
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('Guardar',
+                      style: TextStyle(fontSize: 13)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Diálogo de detalle de notificación ───────────────────────────────────────
+class _NotifDetalleDialog extends StatelessWidget {
+  final String titulo;
+  final String empresa;
+  final String servidor;
+  final Map<String, dynamic> data;
+  final String cuerpoRaw;
+
+  const _NotifDetalleDialog({
+    required this.titulo,
+    required this.empresa,
+    required this.servidor,
+    required this.data,
+    required this.cuerpoRaw,
+  });
+
+  Widget _campo(String label, String? valor) {
+    if (valor == null || valor.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label,
+              style: const TextStyle(
+                  fontSize: 11, fontWeight: FontWeight.w600, color: Colors.grey)),
+          const SizedBox(height: 3),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF5F5F5),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.grey.shade300),
+            ),
+            child: Text(valor, style: const TextStyle(fontSize: 13)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool esFactura = data.containsKey('nombre') || data.containsKey('dui');
+    final monto = data['monto'];
+    final montoStr = monto != null
+        ? '\$${double.tryParse(monto.toString())?.toStringAsFixed(2) ?? monto}'
+        : null;
+
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      titlePadding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+      contentPadding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+      title: Row(children: [
+        const Icon(Icons.notifications_active, color: Color(0xFF25D366), size: 20),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(titulo,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis),
+        ),
+      ]),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 8),
+              // Empresa y servidor
+              Row(children: [
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE8F5E9),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('EMPRESA',
+                          style: TextStyle(fontSize: 10, color: Color(0xFF388E3C),
+                              fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 2),
+                      Text(empresa,
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                    ]),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE3F2FD),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('SERVIDOR',
+                          style: TextStyle(fontSize: 10, color: Color(0xFF1565C0),
+                              fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 2),
+                      Text(servidor,
+                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                    ]),
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 12),
+              if (esFactura) ...[
+                _campo('Nombre / Razón social', data['nombre']?.toString()),
+                _campo('DUI / NIT', data['dui']?.toString()),
+                _campo('Registro IVA', data['registro_iva']?.toString()),
+                _campo('Giro', data['giro']?.toString()),
+                _campo('Dirección', data['direccion']?.toString()),
+                _campo('Celular', data['celular']?.toString()),
+                _campo('Email', data['email']?.toString()),
+                _campo('Concepto', data['concepto']?.toString()),
+                _campo('Monto', montoStr),
+              ] else
+                _campo('Mensaje', cuerpoRaw),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF25D366),
+            foregroundColor: Colors.white,
+          ),
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cerrar'),
+        ),
+      ],
+    );
   }
 }
