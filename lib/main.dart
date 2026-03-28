@@ -296,22 +296,32 @@ class _FormularioScreenState extends State<FormularioScreen> {
       final uuid    = await DeviceUuid.getOrCreate();
       final prefs   = await SharedPreferences.getInstance();
       String _p(String k, String d) { final v = prefs.getString(k) ?? ''; return v.isNotEmpty ? v : d; }
-      final regIva   = _p('num_registro',   _kDefaultNumRegistro);
-      final celDest  = _p('celularserver',  _kDefaultCelularDest);
-      // miCelular: número propio de este teléfono.
-      // Si no está configurado, usa celularDest como antes (compatibilidad).
-      final miCel    = _p('celular_propio', '');
-      final numPropio = miCel.isNotEmpty ? miCel : celDest;
-      final usuario  = _p('nombre_usuario', _kDefaultNombreUsuario);
-      final url      = _p('backend_url',    _kDefaultBackendUrl);
+      final regIva    = _p('num_registro',   _kDefaultNumRegistro);
+      final miCelular = prefs.getString('celular_propio') ?? '';
+      final usuario   = _p('nombre_usuario', _kDefaultNombreUsuario);
+      final url       = _p('backend_url',    _kDefaultBackendUrl);
 
-      // Solo registrar si el registro IVA está configurado.
-      if (regIva.isEmpty) return;
+      // Sin registro IVA o sin número propio no se puede registrar el dispositivo.
+      // NUNCA usar celularserver como fallback: causaría que este teléfono
+      // sobreescriba el FCM token del destinatario en la BD.
+      if (regIva.isEmpty || miCelular.isEmpty) {
+        if (mounted && miCelular.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                '⚠ Configura "Mi número celular" para recibir notificaciones correctamente.'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 6),
+            ),
+          );
+        }
+        return;
+      }
 
       final api = ApiService(url);
       await api.registrarDispositivo(
         registroIva:    regIva,
-        numeroCelular:  numPropio,
+        numeroCelular:  miCelular,
         nombreUsuario:  usuario,
         nombreServidor: _p('nombre_servidor', _kDefaultNombreServidor),
         deviceUuid:     uuid,
@@ -320,15 +330,14 @@ class _FormularioScreenState extends State<FormularioScreen> {
 
       // ── Refrescar token automáticamente cuando Firebase lo rote ───────────
       FirebaseService.onTokenRefresh((newToken) async {
-        final p2  = await SharedPreferences.getInstance();
-        final api2 = ApiService(p2.getString('backend_url') ?? _kDefaultBackendUrl);
+        final p2     = await SharedPreferences.getInstance();
         final miCel2 = p2.getString('celular_propio') ?? '';
-        final numPropio2 = miCel2.isNotEmpty
-            ? miCel2
-            : (p2.getString('celularserver') ?? _kDefaultCelularDest);
+        // Solo re-registrar si el número propio está configurado
+        if (miCel2.isEmpty) return;
+        final api2 = ApiService(p2.getString('backend_url') ?? _kDefaultBackendUrl);
         await api2.registrarDispositivo(
           registroIva:    p2.getString('num_registro')    ?? '',
-          numeroCelular:  numPropio2,
+          numeroCelular:  miCel2,
           nombreUsuario:  p2.getString('nombre_usuario')  ?? _kDefaultNombreUsuario,
           nombreServidor: p2.getString('nombre_servidor') ?? _kDefaultNombreServidor,
           deviceUuid:     await DeviceUuid.getOrCreate(),
@@ -635,9 +644,9 @@ class _FormularioScreenState extends State<FormularioScreen> {
       if (result.success) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(result.message.isNotEmpty ? result.message : 'Datos enviados correctamente'),
+            content: Text('✓ Notificación enviada a $_celularDest'),
             backgroundColor: const Color(0xFF25D366),
-            duration: const Duration(seconds: 2),
+            duration: const Duration(seconds: 3),
           ),
         );
         await Future.delayed(const Duration(milliseconds: 600));
@@ -645,9 +654,9 @@ class _FormularioScreenState extends State<FormularioScreen> {
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Error: ${result.message}'),
+            content: Text('✗ Error al enviar: ${result.message}'),
             backgroundColor: Colors.red,
-            duration: const Duration(seconds: 4),
+            duration: const Duration(seconds: 5),
           ),
         );
       }
