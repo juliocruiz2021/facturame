@@ -8,14 +8,17 @@ Sistema de notificaciones push para empresas compuesto por **tres aplicaciones**
 2. **API Backend "Push Cliente"** — Laravel 11 + PostgreSQL + FCM — lógica de negocio y envío push
 3. **Panel web "Push Cliente"** — React + Vite — para administradores
 
+### Panel web â€” recepciÃ³n visible
+- [x] Historial muestra recepciÃ³n `Confirmada` / `Pendiente`
+
 ---
 
 ## Repositorios GitHub
 
 | Proyecto | Repo | Branch activo |
 |---|---|---|
-| App móvil Flutter | `juliocruiz2021/facturame` | `feature/firebase_push_setup` |
-| Backend + Frontend web | `juliocruiz2021/push_cliente` | `feature/push_cliente_backend` |
+| App móvil Flutter | `juliocruiz2021/facturame` | `feature/confirmacion-recepcion-limpieza` |
+| Backend + Frontend web | `juliocruiz2021/push_cliente` | `feature/confirmacion-recepcion-limpieza` |
 
 ---
 
@@ -263,6 +266,10 @@ POST /api/v1/clientes/registrar-dispositivo
 POST /api/v1/clientes/enviar-datos
   Body: {registro_iva, numero_destino, titulo, cuerpo}
   Busca: clientes_empresa WHERE numero_celular = numero_destino
+
+POST /api/v1/clientes/confirmar-recepcion
+  Body: {mensaje_id, registro_iva, numero_celular, device_uuid}
+  Marca `recepcion_confirmada_at` cuando el destinatario abre el detalle
 ```
 
 ### Protegidos (Sanctum, panel web)
@@ -318,6 +325,9 @@ GET    /api/v1/mensajes/nuevos?desde=<ISO>  — para polling tiempo real
 - [x] Botón 📱 en config para obtener número propio (copia al portapapeles si puede leerlo, abre Ajustes si no)
 - [x] FCM token refresh automático (solo si celular_propio configurado)
 
+### App mÃ³vil â€” recepciÃ³n confirmada
+- [x] Al abrir el detalle de una notificaciÃ³n, confirma recepciÃ³n al backend con `mensaje_id`
+
 ### Backend
 - [x] Registra/actualiza dispositivos (llave: empresa_id + numero_celular)
 - [x] Busca destinatario por numero_celular == numero_destino
@@ -337,7 +347,6 @@ GET    /api/v1/mensajes/nuevos?desde=<ISO>  — para polling tiempo real
 ## Lo que FALTA / Pendiente
 
 - [ ] **Múltiples destinos**: operador solo puede enviar a UN número destino
-- [ ] **Confirmación de recepción**: no se sabe si el destino vio la notificación
 - [ ] **Modo offline**: sin internet los datos se pierden
 - [ ] **Push web (PWA)**: notificaciones del navegador solo funcionan con panel abierto
 

@@ -62,6 +62,8 @@ app_clientes/
 |---|---|---|
 | `POST /api/v1/clientes/registrar-dispositivo` | Público | Al iniciar la app |
 | `POST /api/v1/clientes/enviar-datos` | Público | Al enviar datos del cliente |
+| `POST /api/v1/clientes/confirmar-recepcion` | Público | Al abrir el detalle de una notificación |
+| `POST /api/v1/clientes-compartidos/sync` | Público | Al iniciar, reanudar y guardar clientes |
 
 ---
 
@@ -88,7 +90,7 @@ app_clientes/
 3. Recepción de push
    ├─► Foreground → SnackBar azul con título y cuerpo
    ├─► Background → Notificación del sistema (automática)
-   └─► Tap → _tapSub → TODO: navegación
+   └─► Tap → diálogo de detalle + confirmación de recepción al backend
 ```
 
 ---
@@ -116,13 +118,12 @@ app_clientes/
 | 1.0.0+1 | Envío por WhatsApp (`url_launcher`) |
 | 1.1.0+2 | Reemplazo WhatsApp → HTTP POST + FCM básico |
 | 1.1.0+2* | FCM completo: streams foreground/tap, `FirebaseService`, `DeviceUuid` |
+| 1.1.0+2** | Confirmación de recepción + sincronización compartida de clientes |
 
 ---
 
 ## Pendiente
 
-- [ ] Colocar `android/app/google-services.json` (descargar de Firebase Console)
-- [ ] Configurar `backend_url` en la app con la IP real del servidor
-- [ ] Implementar navegación en `onNotificationTap` (`_tapSub`)
-- [ ] Agregar `flutter_local_notifications` para iconos/canal personalizados en foreground
-- [ ] Build de release y APK para distribución
+- [ ] Múltiples destinos desde la app móvil
+- [ ] Modo offline con cola de reintentos
+- [ ] Seguir modularizando `main.dart`

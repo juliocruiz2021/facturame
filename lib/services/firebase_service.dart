@@ -1,9 +1,10 @@
+import 'dart:convert';
 import 'dart:async';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
-const _channelId   = 'facturame_channel';
+const _channelId = 'facturame_channel';
 const _channelName = 'Facturame Notificaciones';
 
 final FlutterLocalNotificationsPlugin _localNotif =
@@ -28,10 +29,8 @@ class FirebaseService {
 
   static final _messaging = FirebaseMessaging.instance;
 
-  static final _foregroundCtrl =
-      StreamController<RemoteMessage>.broadcast();
-  static final _tapCtrl =
-      StreamController<RemoteMessage>.broadcast();
+  static final _foregroundCtrl = StreamController<RemoteMessage>.broadcast();
+  static final _tapCtrl = StreamController<RemoteMessage>.broadcast();
 
   // Stream para taps en notificaciones locales (foreground).
   // El payload es el cuerpo del mensaje (JSON string).
@@ -54,7 +53,8 @@ class FirebaseService {
 
     await _localNotif
         .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
+          AndroidFlutterLocalNotificationsPlugin
+        >()
         ?.createNotificationChannel(androidChannel);
 
     // Inicializar plugin con callback de tap.
@@ -86,15 +86,19 @@ class FirebaseService {
 
     // App en background → usuario tocó la notificación.
     FirebaseMessaging.onMessageOpenedApp.listen((message) {
-      debugPrint('[FCM] Opened from background: ${message.notification?.title}');
+      debugPrint(
+        '[FCM] Opened from background: ${message.notification?.title}',
+      );
       _tapCtrl.add(message);
     });
 
     // App terminada → usuario tocó la notificación.
     final initial = await _messaging.getInitialMessage();
     if (initial != null) {
-      Future.delayed(const Duration(milliseconds: 1500),
-          () => _tapCtrl.add(initial));
+      Future.delayed(
+        const Duration(milliseconds: 1500),
+        () => _tapCtrl.add(initial),
+      );
     }
   }
 
@@ -102,8 +106,11 @@ class FirebaseService {
     final n = message.notification;
     if (n == null) return;
 
-    // Usamos el body del mensaje como payload para mostrarlo al tocar.
-    final payload = n.body ?? '';
+    final payload = jsonEncode({
+      'titulo': n.title ?? 'NotificaciÃ³n',
+      'cuerpo': n.body ?? '',
+      'mensaje_id': message.data['mensaje_id'],
+    });
 
     _localNotif.show(
       message.hashCode,

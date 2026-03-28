@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../services/recepcion_service.dart';
 import '../widgets/notif_detalle_dialog.dart';
 
 // ─── Modelo ───────────────────────────────────────────────────────────────────
@@ -9,24 +9,28 @@ class NotificacionLocal {
   final String titulo;
   final String cuerpo;
   final DateTime fecha;
+  final int? mensajeId;
 
   NotificacionLocal({
     required this.titulo,
     required this.cuerpo,
     required this.fecha,
+    this.mensajeId,
   });
 
   Map<String, dynamic> toJson() => {
-        'titulo': titulo,
-        'cuerpo': cuerpo,
-        'fecha': fecha.toIso8601String(),
-      };
+    'titulo': titulo,
+    'cuerpo': cuerpo,
+    'fecha': fecha.toIso8601String(),
+    'mensaje_id': mensajeId,
+  };
 
   factory NotificacionLocal.fromJson(Map<String, dynamic> j) =>
       NotificacionLocal(
         titulo: j['titulo'] ?? '',
         cuerpo: j['cuerpo'] ?? '',
         fecha: DateTime.tryParse(j['fecha'] ?? '') ?? DateTime.now(),
+        mensajeId: (j['mensaje_id'] as num?)?.toInt(),
       );
 }
 
@@ -44,11 +48,16 @@ class NotificacionesDB {
 
   static Future<void> guardar(NotificacionLocal n) async {
     final lista = await cargarTodas();
+    if (n.mensajeId != null) {
+      lista.removeWhere((item) => item.mensajeId == n.mensajeId);
+    }
     lista.insert(0, n); // más reciente primero
     if (lista.length > 500) lista.removeRange(500, lista.length);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
-        _key, jsonEncode(lista.map((e) => e.toJson()).toList()));
+      _key,
+      jsonEncode(lista.map((e) => e.toJson()).toList()),
+    );
   }
 
   static Future<void> eliminar(int index) async {
@@ -57,7 +66,9 @@ class NotificacionesDB {
     lista.removeAt(index);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(
-        _key, jsonEncode(lista.map((e) => e.toJson()).toList()));
+      _key,
+      jsonEncode(lista.map((e) => e.toJson()).toList()),
+    );
   }
 
   static Future<void> eliminarTodas() async {
@@ -133,10 +144,12 @@ class _NotificacionesScreenState extends State<NotificacionesScreen> {
       _filtradas = q.isEmpty
           ? _todas
           : _todas
-              .where((n) =>
-                  n.titulo.toLowerCase().contains(q) ||
-                  n.cuerpo.toLowerCase().contains(q))
-              .toList();
+                .where(
+                  (n) =>
+                      n.titulo.toLowerCase().contains(q) ||
+                      n.cuerpo.toLowerCase().contains(q),
+                )
+                .toList();
     });
   }
 
@@ -158,11 +171,14 @@ class _NotificacionesScreenState extends State<NotificacionesScreen> {
         content: const Text('¿Eliminar todas las notificaciones?'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancelar')),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red, foregroundColor: Colors.white),
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
             onPressed: () => Navigator.pop(context, true),
             child: const Text('Eliminar todo'),
           ),
@@ -178,15 +194,17 @@ class _NotificacionesScreenState extends State<NotificacionesScreen> {
     }
   }
 
-  void _verDetalle(NotificacionLocal n) {
+  Future<void> _verDetalle(NotificacionLocal n) async {
+    await RecepcionService.confirmarMensaje(n.mensajeId);
+    if (!mounted) return;
     final parsed = parsearCuerpoNotif(n.cuerpo);
     showDialog(
       context: context,
       builder: (_) => NotifDetalleDialog(
-        titulo:    n.titulo,
-        empresa:   parsed.empresa,
-        servidor:  parsed.servidor,
-        data:      parsed.data,
+        titulo: n.titulo,
+        empresa: parsed.empresa,
+        servidor: parsed.servidor,
+        data: parsed.data,
         cuerpoRaw: n.cuerpo,
       ),
     );
@@ -208,8 +226,10 @@ class _NotificacionesScreenState extends State<NotificacionesScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF25D366),
         foregroundColor: Colors.white,
-        title: const Text('Historial de notificaciones',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+        title: const Text(
+          'Historial de notificaciones',
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+        ),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.pop(context),
@@ -248,9 +268,12 @@ class _NotificacionesScreenState extends State<NotificacionesScreen> {
                 fillColor: Colors.white,
                 isDense: true,
                 contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 10),
+                  horizontal: 12,
+                  vertical: 10,
+                ),
                 border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10)),
+                  borderRadius: BorderRadius.circular(10),
+                ),
               ),
             ),
           ),
@@ -265,8 +288,7 @@ class _NotificacionesScreenState extends State<NotificacionesScreen> {
                     _searchCtrl.text.isNotEmpty
                         ? '${_filtradas.length} resultado(s)'
                         : '${_todas.length} notificaciones',
-                    style: TextStyle(
-                        fontSize: 12, color: Colors.grey[600]),
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                   ),
                 ],
               ),
@@ -277,117 +299,141 @@ class _NotificacionesScreenState extends State<NotificacionesScreen> {
             child: _cargando
                 ? const Center(child: CircularProgressIndicator())
                 : _filtradas.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.notifications_none,
-                                size: 48, color: Colors.grey[400]),
-                            const SizedBox(height: 8),
-                            Text(
-                              _searchCtrl.text.isNotEmpty
-                                  ? 'Sin resultados'
-                                  : 'No hay notificaciones',
-                              style: TextStyle(
-                                  color: Colors.grey[500], fontSize: 14),
-                            ),
-                          ],
+                ? Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.notifications_none,
+                          size: 48,
+                          color: Colors.grey[400],
                         ),
-                      )
-                    : ListView.separated(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        itemCount: _filtradas.length,
-                        separatorBuilder: (_, __) =>
-                            const SizedBox(height: 6),
-                        itemBuilder: (_, i) {
-                          final n = _filtradas[i];
-                          final p = parsearCuerpoNotif(n.cuerpo);
-                          final nombre   = p.data['nombre']?.toString() ?? '';
-                          final concepto = p.data['concepto']?.toString() ?? '';
-                          return Dismissible(
-                            key: Key('${n.fecha.toIso8601String()}_$i'),
-                            direction: DismissDirection.endToStart,
-                            background: Container(
-                              alignment: Alignment.centerRight,
-                              padding: const EdgeInsets.only(right: 16),
-                              decoration: BoxDecoration(
-                                color: Colors.red,
-                                borderRadius: BorderRadius.circular(10),
+                        const SizedBox(height: 8),
+                        Text(
+                          _searchCtrl.text.isNotEmpty
+                              ? 'Sin resultados'
+                              : 'No hay notificaciones',
+                          style: TextStyle(
+                            color: Colors.grey[500],
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    itemCount: _filtradas.length,
+                    separatorBuilder: (_, separatorIndex) =>
+                        const SizedBox(height: 6),
+                    itemBuilder: (_, i) {
+                      final n = _filtradas[i];
+                      final p = parsearCuerpoNotif(n.cuerpo);
+                      final nombre = p.data['nombre']?.toString() ?? '';
+                      final concepto = p.data['concepto']?.toString() ?? '';
+                      return Dismissible(
+                        key: Key('${n.fecha.toIso8601String()}_$i'),
+                        direction: DismissDirection.endToStart,
+                        background: Container(
+                          alignment: Alignment.centerRight,
+                          padding: const EdgeInsets.only(right: 16),
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(Icons.delete, color: Colors.white),
+                        ),
+                        onDismissed: (_) => _eliminar(i),
+                        child: Card(
+                          elevation: 1,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: ListTile(
+                            leading: const CircleAvatar(
+                              backgroundColor: Color(0xFFE8F5E9),
+                              child: Icon(
+                                Icons.notifications,
+                                color: Color(0xFF25D366),
+                                size: 20,
                               ),
-                              child: const Icon(Icons.delete,
-                                  color: Colors.white),
                             ),
-                            onDismissed: (_) => _eliminar(i),
-                            child: Card(
-                              elevation: 1,
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(10)),
-                              child: ListTile(
-                                leading: const CircleAvatar(
-                                  backgroundColor: Color(0xFFE8F5E9),
-                                  child: Icon(Icons.notifications,
-                                      color: Color(0xFF25D366), size: 20),
+                            title: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    p.empresa.isNotEmpty ? p.empresa : n.titulo,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
                                 ),
-                                title: Row(children: [
-                                  Expanded(
+                                if (p.servidor.isNotEmpty)
+                                  Container(
+                                    margin: const EdgeInsets.only(left: 6),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFE3F2FD),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
                                     child: Text(
-                                      p.empresa.isNotEmpty ? p.empresa : n.titulo,
+                                      p.servidor,
                                       style: const TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 13),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
+                                        fontSize: 10,
+                                        color: Color(0xFF1565C0),
+                                        fontWeight: FontWeight.w600,
+                                      ),
                                     ),
                                   ),
-                                  if (p.servidor.isNotEmpty)
-                                    Container(
-                                      margin: const EdgeInsets.only(left: 6),
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 6, vertical: 2),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFFE3F2FD),
-                                        borderRadius: BorderRadius.circular(6),
-                                      ),
-                                      child: Text(p.servidor,
-                                          style: const TextStyle(
-                                              fontSize: 10,
-                                              color: Color(0xFF1565C0),
-                                              fontWeight: FontWeight.w600)),
-                                    ),
-                                ]),
-                                subtitle: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    if (nombre.isNotEmpty)
-                                      Text(nombre,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(fontSize: 12)),
-                                    if (concepto.isNotEmpty)
-                                      Text(concepto,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                              fontSize: 11,
-                                              color: Colors.grey[600])),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      _formatearFecha(n.fecha),
-                                      style: TextStyle(
-                                          fontSize: 10,
-                                          color: Colors.grey[500]),
-                                    ),
-                                  ],
-                                ),
-                                isThreeLine: true,
-                                onTap: () => _verDetalle(n),
-                                trailing: const Icon(Icons.chevron_right,
-                                    color: Colors.grey),
-                              ),
+                              ],
                             ),
-                          );
-                        },
-                      ),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (nombre.isNotEmpty)
+                                  Text(
+                                    nombre,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                if (concepto.isNotEmpty)
+                                  Text(
+                                    concepto,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  _formatearFecha(n.fecha),
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: Colors.grey[500],
+                                  ),
+                                ),
+                              ],
+                            ),
+                            isThreeLine: true,
+                            onTap: () => _verDetalle(n),
+                            trailing: const Icon(
+                              Icons.chevron_right,
+                              color: Colors.grey,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
           ),
         ],
       ),
