@@ -1,8 +1,10 @@
 package com.empresa.app_clientes
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import androidx.core.app.ActivityCompat
@@ -24,6 +26,20 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "getPhoneNumber" -> {
                         result.success(leerNumeroCelular())
+                    }
+                    "openSimSettings" -> {
+                        try {
+                            // Intenta abrir directamente Estado del SIM
+                            val intent = Intent(Settings.ACTION_DEVICE_INFO_SETTINGS)
+                            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            startActivity(intent)
+                        } catch (e: Exception) {
+                            // Fallback: ajustes generales
+                            startActivity(Intent(Settings.ACTION_SETTINGS).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                            })
+                        }
+                        result.success(null)
                     }
                     "requestPhonePermission" -> {
                         val granted = tienePermiso()

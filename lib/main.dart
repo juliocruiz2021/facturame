@@ -1124,7 +1124,7 @@ class _ConfigDialogState extends State<_ConfigDialog> {
   late final TextEditingController _ctrlCelular;
   late final TextEditingController _ctrlMiCelular;
   late final TextEditingController _ctrlUsuario;
-  bool _numeroCelularLeido = false; // true = se leyó del SIM, campo bloqueado
+  bool _numeroCelularLeido = false;
 
   @override
   void initState() {
@@ -1136,84 +1136,63 @@ class _ConfigDialogState extends State<_ConfigDialog> {
     _ctrlCelular   = TextEditingController(text: widget.celularDest);
     _ctrlMiCelular = TextEditingController(text: widget.miCelular);
     _ctrlUsuario   = TextEditingController(text: widget.nombreUsuario);
-    // Si el campo está vacío, preguntar al usuario si desea leerlo del SIM
-    if (widget.miCelular.isEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _preguntarLeerSim());
-    }
   }
 
-  /// Muestra un diálogo de confirmación y, si el usuario acepta, lee el SIM.
-  Future<void> _preguntarLeerSim() async {
-    if (!mounted) return;
-    final confirmar = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: const Row(children: [
-          Icon(Icons.sim_card, color: Color(0xFF25D366)),
-          SizedBox(width: 8),
-          Text('Número de celular',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-        ]),
-        content: const Text(
-          '¿Deseas obtener el número de celular de este dispositivo automáticamente?',
-          style: TextStyle(fontSize: 14),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('No', style: TextStyle(fontSize: 13)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF25D366),
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('Sí', style: TextStyle(fontSize: 13)),
-          ),
-        ],
-      ),
-    );
-    if (confirmar == true) await _leerNumeroCelular();
-  }
-
-  Future<void> _leerNumeroCelular() async {
+  /// Intenta leer el número del SIM.
+  /// Si lo obtiene → lo copia al portapapeles y lo pega en el campo.
+  /// Si no lo obtiene → abre Ajustes > Acerca del teléfono para que el
+  /// usuario lo vea, lo copie manualmente y lo pegue en el campo.
+  Future<void> _obtenerNumeroCelular() async {
     try {
+      // 1. Solicitar permiso (retorna true si ya estaba concedido)
       final granted =
           await _channel.invokeMethod<bool>('requestPhonePermission') ?? false;
       if (!granted) {
-        // Permiso no concedido aún — el diálogo de Android fue mostrado.
-        // La próxima vez que se abra config ya estará otorgado.
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Concede el permiso de teléfono y vuelve a abrir Configuración.'),
-              duration: Duration(seconds: 4),
+              content: Text(
+                  'Concede el permiso de teléfono y vuelve a pulsar el botón.'),
+              duration: Duration(seconds: 5),
             ),
           );
         }
         return;
       }
+
+      // 2. Intentar leer el número
       final numero = await _channel.invokeMethod<String>('getPhoneNumber');
-      if (numero != null && numero.isNotEmpty && mounted) {
+      if (numero != null && numero.isNotEmpty) {
         final limpio = numero
             .replaceAll(RegExp(r'^\+\d{1,3}'), '')
             .replaceAll(RegExp(r'\D'), '');
-        if (limpio.isNotEmpty) {
+        if (limpio.isNotEmpty && mounted) {
+          // Pegar en el campo Y copiar al portapapeles
+          await Clipboard.setData(ClipboardData(text: limpio));
           setState(() {
             _ctrlMiCelular.text = limpio;
             _numeroCelularLeido = true;
           });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Número pegado: $limpio'),
+              backgroundColor: const Color(0xFF25D366),
+              duration: const Duration(seconds: 3),
+            ),
+          );
           return;
         }
       }
-      // El operador no expone el número — informar al usuario
+
+      // 3. No se pudo leer → abrir Ajustes y avisar al usuario
+      await _channel.invokeMethod('openSimSettings');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('No se pudo leer el número del SIM. Escríbelo manualmente.'),
-            duration: Duration(seconds: 4),
+            content: Text(
+                'Tu número aparece en "Estado del SIM". '
+                'Cópialo desde ahí y pégalo en el campo.'),
+            duration: Duration(seconds: 7),
           ),
         );
       }
@@ -1346,21 +1325,11 @@ class _ConfigDialogState extends State<_ConfigDialog> {
             const Text('Número del operador que recibirá las notificaciones',
                 style: TextStyle(fontSize: 11, color: Colors.grey)),
             const SizedBox(height: 14),
-            Row(children: [
-              const Text('Mi número celular (este teléfono):',
-                  style: TextStyle(fontSize: 13)),
-              if (_numeroCelularLeido) ...[
-                const SizedBox(width: 6),
-                const Icon(Icons.sim_card, size: 14, color: Color(0xFF25D366)),
-                const SizedBox(width: 2),
-                const Text('leído del SIM',
-                    style: TextStyle(fontSize: 10, color: Color(0xFF25D366))),
-              ],
-            ]),
+            const Text('Mi número celular (este teléfono):',
+                style: TextStyle(fontSize: 13)),
             const SizedBox(height: 6),
             TextField(
               controller: _ctrlMiCelular,
-              enabled: !_numeroCelularLeido,
               keyboardType: TextInputType.phone,
               style: const TextStyle(fontSize: 14),
               decoration: InputDecoration(
@@ -1369,13 +1338,12 @@ class _ConfigDialogState extends State<_ConfigDialog> {
                 isDense: true,
                 contentPadding:
                     const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-                filled: _numeroCelularLeido,
-                fillColor: _numeroCelularLeido
-                    ? const Color(0xFFE8F5E9)
-                    : null,
-                suffixIcon: _numeroCelularLeido
-                    ? const Icon(Icons.lock, size: 16, color: Color(0xFF25D366))
-                    : null,
+                suffixIcon: IconButton(
+                  tooltip: 'Obtener número del dispositivo',
+                  icon: const Icon(Icons.phone_android,
+                      size: 18, color: Color(0xFF25D366)),
+                  onPressed: _obtenerNumeroCelular,
+                ),
               ),
               inputFormatters: [
                 FilteringTextInputFormatter.digitsOnly,
@@ -1383,11 +1351,9 @@ class _ConfigDialogState extends State<_ConfigDialog> {
               ],
             ),
             const SizedBox(height: 4),
-            Text(
-              _numeroCelularLeido
-                  ? 'Número detectado automáticamente del SIM'
-                  : 'Número con que este dispositivo se identifica en el sistema',
-              style: const TextStyle(fontSize: 11, color: Colors.grey),
+            const Text(
+              'Toca 📱 para obtenerlo automáticamente o escríbelo manualmente',
+              style: TextStyle(fontSize: 11, color: Colors.grey),
             ),
             const SizedBox(height: 14),
             const Text('Nombre de usuario:', style: TextStyle(fontSize: 13)),
