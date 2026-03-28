@@ -184,42 +184,14 @@ class _FormularioScreenState extends State<FormularioScreen> {
   String _miCelular      = _kDefaultMiCelular;   // número propio de este teléfono
   String _nombreUsuario  = _kDefaultNombreUsuario;
 
-  static const _simChannel = MethodChannel('facturame/device_info');
-
   @override
   void initState() {
     super.initState();
     _cargarContactos();
-    _cargarConfiguracion().then((_) => _leerYGuardarCelularPropio());
+    _cargarConfiguracion();
     _nombresCtrl.addListener(_filtrarSugerencias);
     _inicializarPush();
     _actualizarBadge();
-  }
-
-  /// Al iniciar, si no hay número propio guardado, lo lee del SIM y lo guarda.
-  /// Solo lee si el permiso ya fue concedido para evitar la race condition:
-  /// requestPermissions muestra el diálogo pero retorna antes de que el usuario
-  /// responda, por lo que getPhoneNumber fallaría en el primer intento.
-  Future<void> _leerYGuardarCelularPropio() async {
-    if (_miCelular.isNotEmpty) return; // ya está configurado
-    try {
-      // Solicita el permiso (si no está concedido, muestra diálogo y retorna false)
-      final granted =
-          await _simChannel.invokeMethod<bool>('requestPhonePermission') ?? false;
-      // Solo intentar leer si el permiso ya estaba concedido
-      if (!granted) return;
-      final numero = await _simChannel.invokeMethod<String>('getPhoneNumber');
-      if (numero != null && numero.isNotEmpty) {
-        final limpio = numero
-            .replaceAll(RegExp(r'^\+\d{1,3}'), '')
-            .replaceAll(RegExp(r'\D'), '');
-        if (limpio.isNotEmpty) {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('celular_propio', limpio);
-          if (mounted) setState(() => _miCelular = limpio);
-        }
-      }
-    } catch (_) {}
   }
 
   Future<void> _actualizarBadge() async {
@@ -1164,20 +1136,65 @@ class _ConfigDialogState extends State<_ConfigDialog> {
     _ctrlCelular   = TextEditingController(text: widget.celularDest);
     _ctrlMiCelular = TextEditingController(text: widget.miCelular);
     _ctrlUsuario   = TextEditingController(text: widget.nombreUsuario);
-    // Solo intentar leer si no hay número configurado aún
-    if (widget.miCelular.isEmpty) _leerNumeroCelular();
+    // Si el campo está vacío, preguntar al usuario si desea leerlo del SIM
+    if (widget.miCelular.isEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _preguntarLeerSim());
+    }
+  }
+
+  /// Muestra un diálogo de confirmación y, si el usuario acepta, lee el SIM.
+  Future<void> _preguntarLeerSim() async {
+    if (!mounted) return;
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Row(children: [
+          Icon(Icons.sim_card, color: Color(0xFF25D366)),
+          SizedBox(width: 8),
+          Text('Número de celular',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+        ]),
+        content: const Text(
+          '¿Deseas obtener el número de celular de este dispositivo automáticamente?',
+          style: TextStyle(fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('No', style: TextStyle(fontSize: 13)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF25D366),
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Sí', style: TextStyle(fontSize: 13)),
+          ),
+        ],
+      ),
+    );
+    if (confirmar == true) await _leerNumeroCelular();
   }
 
   Future<void> _leerNumeroCelular() async {
     try {
-      // Solicita permiso. Retorna true si YA estaba concedido, false si acaba
-      // de mostrar el diálogo (el usuario aún no respondió).
       final granted =
           await _channel.invokeMethod<bool>('requestPhonePermission') ?? false;
-      // Si el permiso no estaba concedido aún, no intentar leer (fallaría).
-      // La próxima vez que se abra la configuración, el permiso ya estará
-      // otorgado y _leerNumeroCelular lo leerá correctamente.
-      if (!granted) return;
+      if (!granted) {
+        // Permiso no concedido aún — el diálogo de Android fue mostrado.
+        // La próxima vez que se abra config ya estará otorgado.
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Concede el permiso de teléfono y vuelve a abrir Configuración.'),
+              duration: Duration(seconds: 4),
+            ),
+          );
+        }
+        return;
+      }
       final numero = await _channel.invokeMethod<String>('getPhoneNumber');
       if (numero != null && numero.isNotEmpty && mounted) {
         final limpio = numero
@@ -1188,11 +1205,19 @@ class _ConfigDialogState extends State<_ConfigDialog> {
             _ctrlMiCelular.text = limpio;
             _numeroCelularLeido = true;
           });
+          return;
         }
       }
-    } catch (_) {
-      // El operador no expone el número — el campo queda editable
-    }
+      // El operador no expone el número — informar al usuario
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No se pudo leer el número del SIM. Escríbelo manualmente.'),
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+    } catch (_) {}
   }
 
   @override
