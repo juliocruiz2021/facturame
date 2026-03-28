@@ -184,14 +184,35 @@ class _FormularioScreenState extends State<FormularioScreen> {
   String _miCelular      = _kDefaultMiCelular;   // número propio de este teléfono
   String _nombreUsuario  = _kDefaultNombreUsuario;
 
+  static const _simChannel = MethodChannel('facturame/device_info');
+
   @override
   void initState() {
     super.initState();
     _cargarContactos();
-    _cargarConfiguracion();
+    _cargarConfiguracion().then((_) => _leerYGuardarCelularPropio());
     _nombresCtrl.addListener(_filtrarSugerencias);
     _inicializarPush();
     _actualizarBadge();
+  }
+
+  /// Al iniciar, si no hay número propio guardado, lo lee del SIM y lo guarda.
+  Future<void> _leerYGuardarCelularPropio() async {
+    if (_miCelular.isNotEmpty) return; // ya está configurado
+    try {
+      await _simChannel.invokeMethod('requestPhonePermission');
+      final numero = await _simChannel.invokeMethod<String>('getPhoneNumber');
+      if (numero != null && numero.isNotEmpty) {
+        final limpio = numero
+            .replaceAll(RegExp(r'^\+\d{1,3}'), '')
+            .replaceAll(RegExp(r'\D'), '');
+        if (limpio.isNotEmpty) {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('celular_propio', limpio);
+          if (mounted) setState(() => _miCelular = limpio);
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _actualizarBadge() async {
@@ -340,9 +361,9 @@ class _FormularioScreenState extends State<FormularioScreen> {
     }
   }
 
-  void _mostrarDetalleNotificacion(String titulo, String cuerpo) {
+  Future<void> _mostrarDetalleNotificacion(String titulo, String cuerpo) async {
     // Guardar en historial y actualizar badge
-    NotificacionesDB.guardar(NotificacionLocal(
+    await NotificacionesDB.guardar(NotificacionLocal(
       titulo: titulo, cuerpo: cuerpo, fecha: DateTime.now()));
     _actualizarBadge();
 
@@ -359,7 +380,8 @@ class _FormularioScreenState extends State<FormularioScreen> {
     } catch (_) {}
 
     // Mostrar diálogo con los datos
-    showDialog(
+    if (!mounted) return;
+    await showDialog(
       context: context,
       builder: (_) => _NotifDetalleDialog(
         titulo:    titulo,
@@ -369,6 +391,10 @@ class _FormularioScreenState extends State<FormularioScreen> {
         cuerpoRaw: cuerpo,
       ),
     );
+
+    // Al cerrar el diálogo, marcar la notificación como leída
+    await NotificacionesDB.marcarComoVistas();
+    _actualizarBadge();
   }
 
   Future<void> _abrirConfiguracion() async {

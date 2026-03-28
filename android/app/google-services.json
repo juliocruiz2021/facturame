@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "376962476307",
+    "project_id": "facturame-25d12",
+    "storage_bucket": "facturame-25d12.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:376962476307:android:bec1a4a2389dcc234d52e6",
+        "android_client_info": {
+          "package_name": "com.empresa.app_clientes"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCVsec7qZHCY8jsYGNHb02c6za-FD7Z_a8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
