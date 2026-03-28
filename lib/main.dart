@@ -264,7 +264,21 @@ class _FormularioScreenState extends State<FormularioScreen> {
                     style: const TextStyle(
                         fontWeight: FontWeight.bold, fontSize: 13)),
                 if (cuerpo.isNotEmpty)
-                  Text(cuerpo, style: const TextStyle(fontSize: 12)),
+                  Builder(builder: (_) {
+                    final p = parsearCuerpoNotif(cuerpo,
+                        empresaFallback: _nombreEmpresa,
+                        servidorFallback: _nombreServidor);
+                    final nombre = p.data['nombre']?.toString() ?? '';
+                    final txt = nombre.isNotEmpty
+                        ? '${p.empresa} — $nombre'
+                        : p.empresa.isNotEmpty
+                            ? p.empresa
+                            : cuerpo;
+                    return Text(txt,
+                        style: const TextStyle(fontSize: 12),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis);
+                  }),
               ],
             ),
             backgroundColor: const Color(0xFF1A73E8),
