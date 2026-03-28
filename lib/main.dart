@@ -6,6 +6,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+import 'config/app_defaults.dart';
 import 'services/api_service.dart';
 import 'services/firebase_service.dart';
 import 'services/recepcion_service.dart';
@@ -14,13 +15,13 @@ import 'screens/notificaciones_screen.dart';
 import 'widgets/notif_detalle_dialog.dart';
 
 // ─── Constantes de configuración ──────────────────────────────────────────────
-const String _kDefaultBackendUrl = 'http://192.168.1.10:8000';
-const String _kDefaultNombreEmpresa = 'EMPRESA DE PRUEBA';
-const String _kDefaultNumRegistro = '12345-6';
-const String _kDefaultNombreServidor = 'SIGA1';
-const String _kDefaultCelularDest = '63092051';
-const String _kDefaultMiCelular = ''; // número propio de este teléfono
-const String _kDefaultNombreUsuario = 'OPERADOR';
+const String _kDefaultBackendUrl = AppDefaults.backendUrl;
+const String _kDefaultNombreEmpresa = AppDefaults.nombreEmpresa;
+const String _kDefaultNumRegistro = AppDefaults.numRegistro;
+const String _kDefaultNombreServidor = AppDefaults.nombreServidor;
+const String _kDefaultCelularDest = AppDefaults.celularDestino;
+const String _kDefaultMiCelular = AppDefaults.miCelular;
+const String _kDefaultNombreUsuario = AppDefaults.nombreUsuario;
 
 int? _parseMensajeId(dynamic raw) {
   if (raw == null) return null;

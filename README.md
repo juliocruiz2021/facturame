@@ -25,6 +25,21 @@ flutter build apk --release
 # APK en: build/app/outputs/flutter-apk/app-release.apk
 ```
 
+## Build release con defaults embebidos
+
+Para generar un APK ya preconfigurado para produccion:
+
+```powershell
+.\scripts\build_release.ps1 `
+  -BackendUrl 'https://api.tu-dominio.com' `
+  -NombreEmpresa 'TU EMPRESA' `
+  -NumRegistro '12345-6' `
+  -NombreServidor 'SIGA1' `
+  -CelularDestino '70001111'
+```
+
+La app mantiene la configuracion editable, pero el instalador ya llega con esos valores cargados por defecto.
+
 ## Configuración de la app
 
 Al abrir la app, tocar el ícono ⚙️ y configurar:

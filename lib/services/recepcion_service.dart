@@ -1,10 +1,9 @@
 import 'package:shared_preferences/shared_preferences.dart';
+import '../config/app_defaults.dart';
 import '../helpers/device_uuid.dart';
 import 'api_service.dart';
 
 class RecepcionService {
-  static const _defaultBackendUrl = 'http://192.168.1.10:8000';
-
   static Future<bool> confirmarMensaje(int? mensajeId) async {
     if (mensajeId == null) return false;
 
@@ -18,7 +17,7 @@ class RecepcionService {
     }
 
     final api = ApiService(
-      backendUrl.isNotEmpty ? backendUrl : _defaultBackendUrl,
+      backendUrl.isNotEmpty ? backendUrl : AppDefaults.backendUrl,
     );
 
     final result = await api.confirmarRecepcion(

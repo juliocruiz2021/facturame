@@ -46,13 +46,17 @@ app_clientes/
 
 | Key | Default | Descripción |
 |---|---|---|
-| `backend_url` | `http://10.0.2.2:8000` | URL del backend push_cliente |
+| `backend_url` | `http://192.168.1.10:8000` | URL del backend push_cliente |
 | `nombre_empresa` | `EMPRESA DE PRUEBA` | Nombre de la empresa |
 | `nombre_servidor` | `SIGA1` | Identificador del servidor |
 | `num_registro` | _(vacío)_ | Registro IVA de la empresa |
 | `celularserver` | `63092051` | Número del operador destino |
 | `nombre_usuario` | `OPERADOR` | Nombre del usuario registrador |
 | `device_uuid` | _(generado)_ | UUID único del dispositivo |
+
+Los defaults del instalador release también pueden inyectarse con `--dart-define` usando:
+`APP_DEFAULT_BACKEND_URL`, `APP_DEFAULT_NOMBRE_EMPRESA`, `APP_DEFAULT_NUM_REGISTRO`,
+`APP_DEFAULT_NOMBRE_SERVIDOR`, `APP_DEFAULT_CELULAR_DESTINO`, `APP_DEFAULT_NOMBRE_USUARIO`.
 
 ---
 
