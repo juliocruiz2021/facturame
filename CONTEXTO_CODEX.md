@@ -207,6 +207,8 @@ lib/
     firebase_service.dart            — FCM + local notifications
   screens/
     notificaciones_screen.dart       — Historial + NotificacionLocal + NotificacionesDB
+  widgets/
+    notif_detalle_dialog.dart        — NotifDetalleDialog + parsearCuerpoNotif() (widget compartido)
   helpers/
     device_uuid.dart                 — UUID único del dispositivo
 
@@ -289,9 +291,10 @@ GET    /api/v1/mensajes/nuevos?desde=<ISO>  — para polling tiempo real
 - [x] Si `celular_propio` vacío: NO registra + aviso naranja al usuario
 - [x] Notificación push llega al teléfono DESTINO (no al operador)
 - [x] Al enviar: SnackBar confirma "✓ Notificación enviada a XXXXXXXX"
-- [x] Al tocar notificación: diálogo con campos JSON (empresa, servidor, DUI, IVA, giro…)
+- [x] Al tocar notificación: diálogo con campos formateados (empresa, servidor, DUI, IVA, giro…)
 - [x] Al cerrar diálogo: badge decrementado
-- [x] Historial de notificaciones recibidas
+- [x] SnackBar en foreground muestra info parseada (`Empresa — Nombre cliente`), no JSON crudo
+- [x] Historial de notificaciones: lista con empresa, servidor, nombre, concepto; tap → mismo diálogo que push
 - [x] Botón 📱 en config para obtener número propio (copia al portapapeles si puede leerlo, abre Ajustes si no)
 - [x] FCM token refresh automático (solo si celular_propio configurado)
 
@@ -385,7 +388,7 @@ VITE_API_URL=http://127.0.0.1:8000/api/v1
 
 4. **Modelo AdminUser**: autenticación web usa `App\Models\AdminUser`, NO `App\Models\User`.
 
-5. **Parseo JSON notificación**: `cuerpo` es string JSON. Parsear con `jsonDecode(cuerpo)`. `empresa` y `servidor` están al nivel raíz; los datos de factura en `json['data']`.
+5. **Parseo JSON notificación**: `cuerpo` es string JSON. Parsear con `parsearCuerpoNotif(cuerpo)` de `widgets/notif_detalle_dialog.dart`. `empresa` y `servidor` están al nivel raíz; los datos de factura en `json['data']`. Esta función se usa en main.dart, notificaciones_screen.dart y notif_detalle_dialog.dart.
 
 6. **celular_propio NUNCA puede ser celularserver**: el bug histórico era usar el número destino como número propio. Esto sobreescribía el FCM token del jefe con el del operador.
 
@@ -394,3 +397,7 @@ VITE_API_URL=http://127.0.0.1:8000/api/v1
 8. **SIM no expone número**: en muchos operadores de Centroamérica `TelephonyManager.getLine1Number()` devuelve null. Se usa `SubscriptionManager` como fallback. Si ambos fallan, se abre Settings para que el usuario lo vea y escriba manualmente.
 
 9. **Badge app móvil**: timestamp `notif_vista_en` en SharedPrefs. Se resetea al abrir historial o al cerrar diálogo de detalle push.
+
+10. **SnackBar foreground**: NO mostrar `cuerpo` directo (es JSON crudo). Usar `parsearCuerpoNotif(cuerpo)` y mostrar `'${p.empresa} — ${p.data['nombre']}'`.
+
+11. **NotifDetalleDialog**: widget compartido en `lib/widgets/notif_detalle_dialog.dart`. Usado tanto al tocar una notificación push como al tocar un ítem del historial. `esFactura = data.containsKey('nombre') || data.containsKey('dui')`.
