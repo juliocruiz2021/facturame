@@ -4,11 +4,12 @@
 
 **Facturame** es una app Android para registrar datos de clientes y enviarlos al backend `push_cliente`. En versiones anteriores enviaba los datos por WhatsApp; desde la v1.1 los envía directamente al backend vía HTTP y puede recibir notificaciones push.
 
-### Despliegue provisional actual
+### Despliegue actual
 
-- Panel web temporal: `http://138.197.36.98:8081`
-- API temporal: `http://138.197.36.98:8082`
-- Mientras la API siga sin dominio/SSL, Android tiene `usesCleartextTraffic="true"` en `AndroidManifest.xml` para permitir el APK release sobre HTTP. Cuando migremos a HTTPS conviene retirarlo.
+- Panel web: `https://facturame.appsigasv.com`
+- Backend recomendado para la app: `https://facturame.appsigasv.com`
+- La web usa mismo origen y proxya `/api` hacia Laravel en el VPS.
+- El APK release final ya no necesita `usesCleartextTraffic` porque la conexiÃ³n queda sobre HTTPS.
 
 ---
 
