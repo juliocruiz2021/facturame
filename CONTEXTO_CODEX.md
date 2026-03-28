@@ -37,13 +37,13 @@ Sistema de notificaciones push para empresas compuesto por **tres aplicaciones**
 │                    FLUJO COMPLETO                            │
 │                                                             │
 │  App Flutter (operador)                                     │
-│    │  1. Al iniciar: lee SIM → guarda celular_propio        │
-│    │  2. Registra dispositivo en backend (POST)             │
-│    │  3. Operador llena formulario con datos del cliente     │
-│    │  4. Toca "Enviar" → POST /api/v1/clientes/enviar-datos │
+│    │  1. Al iniciar: registra dispositivo con celular_propio │
+│    │  2. Operador llena formulario con datos del cliente     │
+│    │  3. Toca "Enviar" → POST /api/v1/clientes/enviar-datos  │
+│    │  4. Muestra SnackBar: "✓ Notificación enviada a XXXX"  │
 │    ▼                                                        │
 │  Backend Laravel (API)                                      │
-│    │  5. Recibe datos, busca FCM token del destino          │
+│    │  5. Busca FCM token por numero_celular == numero_destino│
 │    │  6. Envía push vía kreait/firebase-php (FCM)           │
 │    │  7. Guarda mensaje en BD con estado                    │
 │    ▼                                                        │
@@ -63,10 +63,9 @@ Sistema de notificaciones push para empresas compuesto por **tres aplicaciones**
 
 | App Flutter | API Backend | Panel Web React |
 |---|---|---|
-| Registra dispositivo (FCM token + numero_celular) | Guarda en `clientes_empresa` | Lista en `/clientes` |
+| Registra dispositivo (FCM token + celular_propio) | Guarda en `clientes_empresa` | Lista en `/clientes` |
 | Envía datos del cliente | Crea `mensajes`, reenvía por FCM | Muestra en `/mensajes` |
 | Recibe push, muestra diálogo | Marca estado `enviado`/`fallido` | Badge tiempo real |
-| Lee número SIM → `celular_propio` | Identifica dispositivo único | Muestra servidor en tabla |
 
 ---
 
@@ -79,7 +78,7 @@ Sistema de notificaciones push para empresas compuesto por **tres aplicaciones**
 - `shared_preferences` — persistencia local de config y notificaciones
 - `http` — llamadas al backend
 - `uuid` — identificador único del dispositivo
-- MethodChannel `facturame/device_info` — leer número SIM desde Kotlin
+- MethodChannel `facturame/device_info` — leer número SIM y abrir ajustes del SIM
 - `MainActivity.kt` implementa el canal nativo
 
 ### Backend (Laravel 11)
@@ -99,8 +98,6 @@ Sistema de notificaciones push para empresas compuesto por **tres aplicaciones**
 ---
 
 ## Base de datos (PostgreSQL)
-
-### Tablas principales
 
 ```
 empresas
@@ -133,16 +130,17 @@ Operador (Facturame app)
   │
   ▼
 POST /api/v1/clientes/enviar-datos
-  {registro_iva, numero_destino, titulo, cuerpo: JSON}
+  {registro_iva, numero_destino: celularserver, titulo, cuerpo: JSON}
   │
   ▼
-Backend crea Mensaje → FcmService → envía FCM al FCM token
-del cliente con numero_celular == numero_destino
+Backend busca clientes_empresa donde numero_celular == numero_destino
+  → obtiene fcm_token del destinatario
+  → FcmService envía FCM a ese token
   │
   ▼
 Teléfono destino recibe notificación push
-  └─ Toca notificación → Facturame muestra diálogo con campos del JSON
-     └─ Al cerrar diálogo → badge se decrementa a 0
+  └─ Toca notificación → diálogo con campos del JSON
+     └─ Al cerrar → badge decrementado
 ```
 
 ### JSON enviado como `cuerpo` del mensaje
@@ -168,26 +166,34 @@ Teléfono destino recibe notificación push
 
 ## App móvil — Configuración por celular
 
-Cada teléfono se configura en ⚙️ Configuración:
-
 | Campo | Clave SharedPrefs | Descripción |
 |---|---|---|
 | URL del backend | `backend_url` | `http://192.168.1.10:8000` |
 | Nombre empresa | `nombre_empresa` | Mostrado en la app |
 | Nombre servidor | `nombre_servidor` | Identifica el sistema (ej. SIGA1) |
 | Num. Registro IVA | `num_registro` | Identifica la empresa en el backend |
-| Número destino | `celularserver` | Quién recibe las notificaciones |
-| Mi número celular | `celular_propio` | Número propio de ESTE teléfono (registro) |
+| Número destino | `celularserver` | Número al que SE ENVÍAN las notificaciones |
+| Mi número celular | `celular_propio` | Número PROPIO de ESTE teléfono (registro en BD) |
 | Nombre usuario | `nombre_usuario` | Nombre del operador |
 
-**Importante:** `celular_propio` es el número con que este dispositivo
-se registra en `clientes_empresa.numero_celular`. `celularserver` es el
-número DESTINO al que se envían las notificaciones. Son distintos.
+### CRÍTICO — celular_propio vs celularserver
 
-**Auto-lectura del SIM:** Al arrancar la app, si `celular_propio` está vacío,
-se lee automáticamente el número del SIM vía `MethodChannel('facturame/device_info')`
-→ `requestPhonePermission` + `getPhoneNumber`, y se guarda en SharedPreferences.
-En el diálogo de config se muestra el icono 📶 "leído del SIM" si fue detectado.
+- `celular_propio` = número de ESTE teléfono → se guarda en `clientes_empresa.numero_celular`
+- `celularserver` = número DESTINO → a quien se envían las notificaciones
+- **NUNCA usar celularserver como fallback para celular_propio**: causaría que el operador sobreescriba el FCM token del destinatario en la BD, y las notificaciones llegarían al operador en vez del destino.
+- Si `celular_propio` está vacío → el dispositivo NO se registra → aparece aviso naranja.
+
+### Obtener número propio en configuración
+
+El campo "Mi número celular" tiene un ícono 📱 verde. Al tocarlo:
+1. Si el SIM expone el número → lo pega en el campo y lo copia al portapapeles
+2. Si el SIM no lo expone → abre **Ajustes → Acerca del teléfono** para verlo manualmente
+3. Si el permiso no estaba concedido → muestra diálogo de Android + aviso para reintentar
+
+Métodos usados en Kotlin (`MainActivity.kt`):
+- `TelephonyManager.getLine1Number()` (intento 1)
+- `SubscriptionManager.activeSubscriptionInfoList` (intento 2, Android 5.1+)
+- `openSimSettings` → abre `Settings.ACTION_DEVICE_INFO_SETTINGS`
 
 ---
 
@@ -200,23 +206,26 @@ lib/
     api_service.dart                 — HTTP calls al backend
     firebase_service.dart            — FCM + local notifications
   screens/
-    notificaciones_screen.dart       — Historial de notificaciones recibidas
-                                       + NotificacionLocal model
-                                       + NotificacionesDB (SharedPrefs)
+    notificaciones_screen.dart       — Historial + NotificacionLocal + NotificacionesDB
   helpers/
     device_uuid.dart                 — UUID único del dispositivo
 
 android/app/src/main/
-  kotlin/.../MainActivity.kt         — MethodChannel para leer SIM
+  kotlin/.../MainActivity.kt         — MethodChannel: getPhoneNumber, requestPhonePermission,
+                                       openSimSettings
   AndroidManifest.xml                — Permisos: INTERNET, POST_NOTIFICATIONS,
                                        READ_PHONE_STATE, READ_PHONE_NUMBERS
 ```
 
-### Lógica de badge (notificaciones no leídas)
-- `NotificacionesDB.contarNoVistas()` — cuenta notificaciones después de `notif_vista_en`
-- `NotificacionesDB.marcarComoVistas()` — actualiza timestamp `notif_vista_en` a NOW
-- Al **tocar** una notificación push → se muestra diálogo → al cerrarlo: `marcarComoVistas()` + `_actualizarBadge()`
-- Al **abrir** pantalla de historial → `marcarComoVistas()` automáticamente
+### Badge (notificaciones no leídas)
+- `NotificacionesDB.marcarComoVistas()` → actualiza timestamp `notif_vista_en`
+- `NotificacionesDB.contarNoVistas()` → cuenta notificaciones más recientes que el timestamp
+- Badge baja cuando: se abre historial O se cierra el diálogo de detalle push
+
+### Confirmación de envío
+- Éxito: SnackBar verde `✓ Notificación enviada a XXXXXXXX`
+- Error: SnackBar rojo `✗ Error al enviar: <mensaje>`
+- Sin celular_propio: SnackBar naranja `⚠ Configura "Mi número celular"...`
 
 ---
 
@@ -227,9 +236,11 @@ android/app/src/main/
 POST /api/v1/clientes/registrar-dispositivo
   Body: {registro_iva, numero_celular, nombre_usuario, nombre_servidor,
          device_uuid, fcm_token, plataforma, version_app}
+  Llave única: (empresa_id, numero_celular) → updateOrCreate
 
 POST /api/v1/clientes/enviar-datos
   Body: {registro_iva, numero_destino, titulo, cuerpo}
+  Busca: clientes_empresa WHERE numero_celular = numero_destino
 ```
 
 ### Protegidos (Sanctum, panel web)
@@ -259,72 +270,53 @@ GET    /api/v1/mensajes/nuevos?desde=<ISO>  — para polling tiempo real
 |---|---|
 | `/login` | Autenticación admin |
 | `/dashboard` | Estadísticas generales |
-| `/empresas` | CRUD empresas + muestra servidor(es) registrados como badges |
-| `/clientes` | Lista dispositivos registrados con empresa y servidor |
-| `/mensajes` | Historial mensajes + enviar modal + detalle con campos JSON |
+| `/empresas` | CRUD empresas + Servidor(es) como badges |
+| `/clientes` | Lista dispositivos con empresa y nombre_servidor |
+| `/mensajes` | Historial + enviar modal + ModalDetalle con campos JSON |
 
-### Notificaciones en tiempo real (frontend)
-- `NotifContext.jsx` — polling cada 20s a `/mensajes/nuevos?desde=<last_check>`
-- `Layout.jsx` — campanita con badge rojo en el header
-- Al llegar mensajes nuevos: badge se actualiza, notificación del navegador, auto-refresh lista
-- Clic campanita → navega a `/mensajes`
-
-### Archivos React clave
-```
-src/
-  contexts/
-    NotifContext.jsx         — polling tiempo real, badge global, Web Notifications API
-  components/
-    Layout.jsx               — estructura, header con NotifBell (badge)
-  pages/
-    Login.jsx
-    Dashboard.jsx
-    Empresas.jsx             — CRUD + columna Servidor(es) como badges
-    Clientes.jsx             — lista con nombre_servidor debajo del nombre_usuario
-    Mensajes.jsx             — historial + ModalDetalle con campos JSON formateados
-  lib/
-    axios.js                 — cliente HTTP con interceptor de auth
-```
+### Notificaciones en tiempo real
+- `NotifContext.jsx` — polling 20s, badge global, Web Notifications API
+- `Layout.jsx` — campanita con badge rojo
+- `Mensajes.jsx` — banner de nuevos mensajes + auto-refresh
 
 ---
 
-## Estado actual del sistema — Lo que YA funciona
+## Estado actual — Lo que YA funciona
 
 ### App móvil
-- [x] Envía datos del cliente al backend vía HTTP
-- [x] Al arrancar: lee número SIM automáticamente y guarda en config si estaba vacío
-- [x] Cada dispositivo se registra con su PROPIO número (celular_propio ≠ celularserver)
-- [x] Recibe push FCM, banner en Android (canal alta importancia)
-- [x] Al tocar notificación → diálogo con campos JSON (empresa, servidor, DUI, IVA, giro, etc.)
-- [x] Al cerrar el diálogo → badge decrementado a 0
-- [x] Badge de mensajes no leídos en AppBar (campanita)
+- [x] Envía datos al backend vía HTTP
+- [x] Registro de dispositivo con `celular_propio` (nunca con `celularserver`)
+- [x] Si `celular_propio` vacío: NO registra + aviso naranja al usuario
+- [x] Notificación push llega al teléfono DESTINO (no al operador)
+- [x] Al enviar: SnackBar confirma "✓ Notificación enviada a XXXXXXXX"
+- [x] Al tocar notificación: diálogo con campos JSON (empresa, servidor, DUI, IVA, giro…)
+- [x] Al cerrar diálogo: badge decrementado
 - [x] Historial de notificaciones recibidas
-- [x] FCM token refresh automático
+- [x] Botón 📱 en config para obtener número propio (copia al portapapeles si puede leerlo, abre Ajustes si no)
+- [x] FCM token refresh automático (solo si celular_propio configurado)
 
 ### Backend
-- [x] Registra/actualiza dispositivos con FCM token
-- [x] Recibe datos del operador y envía push FCM al número destino
-- [x] Historial de mensajes con filtros y paginación
-- [x] Endpoint `/mensajes/nuevos` para polling del frontend
-- [x] CRUD empresas con eager load de servidores registrados
-- [x] Autenticación Sanctum para panel web
+- [x] Registra/actualiza dispositivos (llave: empresa_id + numero_celular)
+- [x] Busca destinatario por numero_celular == numero_destino
+- [x] Envía FCM al token correcto
+- [x] Historial con filtros y paginación
+- [x] Endpoint `/mensajes/nuevos` para polling
+- [x] CRUD empresas con servers registrados
 
 ### Panel web
 - [x] Login, dashboard, empresas, clientes, mensajes
 - [x] Polling tiempo real (badge + notificación navegador)
-- [x] ModalDetalle muestra campos del JSON formateados (no raw JSON)
-- [x] Columna nombre_servidor en Clientes y Empresas
-- [x] Servidores registrados como badges en página Empresas
+- [x] ModalDetalle con campos JSON formateados
+- [x] nombre_servidor en Clientes y Empresas
 
 ---
 
 ## Lo que FALTA / Pendiente
 
-- [ ] **Múltiples empresas destino**: operador solo puede enviar a UN número destino. Para selección dinámica habría que cambiar el flujo
-- [ ] **Configuración desde el servidor**: los ajustes se configuran manualmente en la app
-- [ ] **Push web (PWA)**: notificaciones del navegador requieren panel abierto (polling). Se podría implementar Web Push con service workers
-- [ ] **Confirmación de recepción**: el sistema no sabe si el destino realmente vio la notificación
-- [ ] **Modo offline**: sin internet los datos se pierden (no hay cola local)
+- [ ] **Múltiples destinos**: operador solo puede enviar a UN número destino
+- [ ] **Confirmación de recepción**: no se sabe si el destino vio la notificación
+- [ ] **Modo offline**: sin internet los datos se pierden
+- [ ] **Push web (PWA)**: notificaciones del navegador solo funcionan con panel abierto
 
 ---
 
@@ -340,30 +332,28 @@ C:\xampp\php\php.exe artisan serve --host=0.0.0.0 --port=8000
 ```bash
 cd D:\Desarrollo_Flutter\push_cliente\frontend
 npm run dev -- --port 5200
-# Acceder: http://localhost:5200
-# Credenciales: admin@pushcliente.com / password (o el usuario creado)
+# http://localhost:5200 — admin@pushcliente.com / password
 ```
 
 ### App Flutter
 ```bash
 cd D:\Desarrollo_Flutter\clientes\app_clientes
 flutter build apk --release
-# APK en: build\app\outputs\flutter-apk\app-release.apk
-# APK copiado a: D:\Desarrollo_Flutter\clientes\facturame.apk
+# APK → build\app\outputs\flutter-apk\app-release.apk
+# Copia → D:\Desarrollo_Flutter\clientes\facturame.apk
 ```
 
-### Instalar APK por ADB
+### ADB
 ```bash
-# Ruta ADB en Windows:
-# C:\Users\julio\AppData\Local\Android\Sdk\platform-tools\adb.exe
-
+# Flutter:  C:\Users\julio\AppData\Local\Programs\flutter\bin\flutter.bat
+# ADB:      C:\Users\julio\AppData\Local\Android\Sdk\platform-tools\adb.exe
 adb devices
-adb -s <device_id> install -r build\app\outputs\flutter-apk\app-release.apk
+adb -s <device_id> install -r facturame.apk
 ```
 
 ---
 
-## Variables de entorno importantes
+## Variables de entorno
 
 ### Backend `.env`
 ```
@@ -380,30 +370,27 @@ VITE_API_URL=http://127.0.0.1:8000/api/v1
 ```
 
 ### Firebase
-- Credenciales backend: `backend/storage/app/firebase-credentials.json`
-- App Android: `android/app/google-services.json`
+- Backend: `backend/storage/app/firebase-credentials.json`
+- Android: `android/app/google-services.json`
 
 ---
 
 ## Notas técnicas importantes
 
-1. **Docker en puerto 8000**: Docker Desktop intercepta `localhost:8000` (IPv6). Siempre usar `127.0.0.1:8000` desde el frontend.
+1. **Docker puerto 8000**: usar `127.0.0.1:8000` no `localhost:8000` (IPv6).
 
-2. **`ilike` en PostgreSQL**: el backend usa `ilike` para búsquedas case-insensitive. No usar `like`.
+2. **`ilike` PostgreSQL**: usar `ilike` para búsquedas, no `like`.
 
-3. **Canal FCM en Android**: el canal `facturame_channel` debe crearse con `Importance.HIGH` en código (no solo en AndroidManifest) para que aparezca el banner visual.
+3. **Canal FCM Android**: crear `facturame_channel` con `Importance.HIGH` en código Dart, no solo AndroidManifest.
 
-4. **Modelo AdminUser**: la autenticación del panel web usa `App\Models\AdminUser`, NO `App\Models\User`.
+4. **Modelo AdminUser**: autenticación web usa `App\Models\AdminUser`, NO `App\Models\User`.
 
-5. **Parseo JSON en notificación**: el `cuerpo` del mensaje es un JSON string. En la app se parsea con `jsonDecode(cuerpo)` y se extrae `json['data']` para los campos de la factura. `json['empresa']` y `json['servidor']` están al nivel raíz.
+5. **Parseo JSON notificación**: `cuerpo` es string JSON. Parsear con `jsonDecode(cuerpo)`. `empresa` y `servidor` están al nivel raíz; los datos de factura en `json['data']`.
 
-6. **celular_propio vs celularserver**:
-   - `celular_propio` = número de ESTE teléfono (se registra como `numero_celular` en BD)
-   - `celularserver` = número DESTINO al que se envían las notificaciones
-   - Son campos distintos. El error histórico era usar `celularserver` para ambos.
+6. **celular_propio NUNCA puede ser celularserver**: el bug histórico era usar el número destino como número propio. Esto sobreescribía el FCM token del jefe con el del operador.
 
-7. **esFactura en frontend**: detecta si el mensaje es solicitud de factura con `!!(data.nombre || data.dui || data.registro_iva || data.giro || data.concepto)`.
+7. **esFactura (frontend)**: `!!(data.nombre || data.dui || data.registro_iva || data.giro || data.concepto)`.
 
-8. **SIM auto-read race condition**: `requestPhonePermission` en Kotlin retorna inmediatamente (sin esperar que el usuario acepte el diálogo). Si es la primera vez, el permiso puede no estar concedido cuando se llama `getPhoneNumber`. En la segunda apertura de la app ya funciona porque el permiso fue otorgado.
+8. **SIM no expone número**: en muchos operadores de Centroamérica `TelephonyManager.getLine1Number()` devuelve null. Se usa `SubscriptionManager` como fallback. Si ambos fallan, se abre Settings para que el usuario lo vea y escriba manualmente.
 
-9. **Badge en app móvil**: usa un timestamp `notif_vista_en` en SharedPreferences. Se actualiza al abrir el historial O al cerrar el diálogo de detalle de una notificación recibida por push.
+9. **Badge app móvil**: timestamp `notif_vista_en` en SharedPrefs. Se resetea al abrir historial o al cerrar diálogo de detalle push.
