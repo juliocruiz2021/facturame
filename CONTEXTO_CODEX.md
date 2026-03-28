@@ -27,6 +27,9 @@ Sistema de notificaciones push para empresas compuesto por **tres aplicaciones**
 | Backend Laravel | `D:\Desarrollo_Flutter\push_cliente\backend\` |
 | Frontend React | `D:\Desarrollo_Flutter\push_cliente\frontend\` |
 | APK de distribución | `D:\Desarrollo_Flutter\clientes\facturame.apk` |
+| Flutter CLI | `C:\Users\julio\AppData\Local\Programs\flutter\bin\flutter.bat` |
+| ADB | `C:\Users\julio\AppData\Local\Android\Sdk\platform-tools\adb.exe` |
+| Dispositivo Android | `R5CY11ZPTDJ` |
 
 ---
 
@@ -83,17 +86,17 @@ Sistema de notificaciones push para empresas compuesto por **tres aplicaciones**
 
 ### Backend (Laravel 11)
 - PHP 8.2 / Laravel 11
-- PostgreSQL
+- PostgreSQL (Docker container `sigaerp_postgres`, 127.0.0.1:5432)
 - Laravel Sanctum (autenticación admin web)
 - `kreait/firebase-php` — envío FCM
 - Credenciales Firebase: `storage/app/firebase-credentials.json`
 
 ### Frontend web (React + Vite)
-- React 18 + React Router v6
-- TanStack Query (React Query) — data fetching y caché
-- Tailwind CSS
+- React 19 + React Router v6
+- TanStack Query v5 (React Query) — data fetching y caché
+- Tailwind CSS 3
 - Axios — HTTP client con baseURL `http://127.0.0.1:8000/api/v1`
-- Puerto Vite: 5200
+- Puerto Vite: 5200 (dev)
 
 ---
 
@@ -208,7 +211,7 @@ lib/
   screens/
     notificaciones_screen.dart       — Historial + NotificacionLocal + NotificacionesDB
   widgets/
-    notif_detalle_dialog.dart        — NotifDetalleDialog + parsearCuerpoNotif() (widget compartido)
+    notif_detalle_dialog.dart        — NotifDetalleDialog + parsearCuerpoNotif() (compartido)
   helpers/
     device_uuid.dart                 — UUID único del dispositivo
 
@@ -219,10 +222,27 @@ android/app/src/main/
                                        READ_PHONE_STATE, READ_PHONE_NUMBERS
 ```
 
+### Widget compartido: NotifDetalleDialog
+
+**Archivo:** `lib/widgets/notif_detalle_dialog.dart`
+Exporta:
+- `parsearCuerpoNotif(cuerpo, {empresaFallback, servidorFallback})` → `NotifDetalleData`
+- `NotifDetalleDialog` — diálogo con tarjetas empresa/servidor + campos del formulario
+
+`esFactura = data.containsKey('nombre') || data.containsKey('dui')`
+
+Usado en: `main.dart` (push tap) y `notificaciones_screen.dart` (historial tap)
+
 ### Badge (notificaciones no leídas)
 - `NotificacionesDB.marcarComoVistas()` → actualiza timestamp `notif_vista_en`
 - `NotificacionesDB.contarNoVistas()` → cuenta notificaciones más recientes que el timestamp
 - Badge baja cuando: se abre historial O se cierra el diálogo de detalle push
+
+### SnackBar en foreground
+**NO** mostrar `cuerpo` directo (es JSON crudo). Parsear con `parsearCuerpoNotif(cuerpo)` y mostrar:
+```
+Empresa — Nombre cliente
+```
 
 ### Confirmación de envío
 - Éxito: SnackBar verde `✓ Notificación enviada a XXXXXXXX`
@@ -293,8 +313,8 @@ GET    /api/v1/mensajes/nuevos?desde=<ISO>  — para polling tiempo real
 - [x] Al enviar: SnackBar confirma "✓ Notificación enviada a XXXXXXXX"
 - [x] Al tocar notificación: diálogo con campos formateados (empresa, servidor, DUI, IVA, giro…)
 - [x] Al cerrar diálogo: badge decrementado
-- [x] SnackBar en foreground muestra info parseada (`Empresa — Nombre cliente`), no JSON crudo
-- [x] Historial de notificaciones: lista con empresa, servidor, nombre, concepto; tap → mismo diálogo que push
+- [x] SnackBar en foreground muestra info parseada (`Empresa — Nombre cliente`), NO JSON crudo
+- [x] Historial: lista con empresa, servidor, nombre, concepto; tap → mismo diálogo que push
 - [x] Botón 📱 en config para obtener número propio (copia al portapapeles si puede leerlo, abre Ajustes si no)
 - [x] FCM token refresh automático (solo si celular_propio configurado)
 
@@ -335,23 +355,21 @@ C:\xampp\php\php.exe artisan serve --host=0.0.0.0 --port=8000
 ```bash
 cd D:\Desarrollo_Flutter\push_cliente\frontend
 npm run dev -- --port 5200
-# http://localhost:5200 — admin@pushcliente.com / password
+# http://localhost:5200 — admin@pushcliente.com / Admin1234!
 ```
 
 ### App Flutter
 ```bash
 cd D:\Desarrollo_Flutter\clientes\app_clientes
-flutter build apk --release
+C:\Users\julio\AppData\Local\Programs\flutter\bin\flutter.bat build apk --release
 # APK → build\app\outputs\flutter-apk\app-release.apk
 # Copia → D:\Desarrollo_Flutter\clientes\facturame.apk
 ```
 
-### ADB
+### Instalar APK en dispositivo
 ```bash
-# Flutter:  C:\Users\julio\AppData\Local\Programs\flutter\bin\flutter.bat
-# ADB:      C:\Users\julio\AppData\Local\Android\Sdk\platform-tools\adb.exe
-adb devices
-adb -s <device_id> install -r facturame.apk
+C:\Users\julio\AppData\Local\Android\Sdk\platform-tools\adb.exe devices
+C:\Users\julio\AppData\Local\Android\Sdk\platform-tools\adb.exe -s R5CY11ZPTDJ install -r D:\Desarrollo_Flutter\clientes\facturame.apk
 ```
 
 ---
@@ -364,7 +382,11 @@ DB_CONNECTION=pgsql
 DB_HOST=127.0.0.1
 DB_PORT=5432
 DB_DATABASE=push_cliente
+DB_USERNAME=sigaerp_user
+DB_PASSWORD=sigaerp_pass
 FRONTEND_URL=http://localhost:5200
+FIREBASE_CREDENTIALS=storage/app/firebase-credentials.json
+FIREBASE_PROJECT_ID=<id del proyecto Firebase>
 ```
 
 ### Frontend `.env.local`
@@ -388,11 +410,11 @@ VITE_API_URL=http://127.0.0.1:8000/api/v1
 
 4. **Modelo AdminUser**: autenticación web usa `App\Models\AdminUser`, NO `App\Models\User`.
 
-5. **Parseo JSON notificación**: `cuerpo` es string JSON. Parsear con `parsearCuerpoNotif(cuerpo)` de `widgets/notif_detalle_dialog.dart`. `empresa` y `servidor` están al nivel raíz; los datos de factura en `json['data']`. Esta función se usa en main.dart, notificaciones_screen.dart y notif_detalle_dialog.dart.
+5. **Parseo JSON notificación**: `cuerpo` es string JSON. Parsear con `parsearCuerpoNotif(cuerpo)` de `widgets/notif_detalle_dialog.dart`. `empresa` y `servidor` están al nivel raíz; los datos de factura en `json['data']`.
 
 6. **celular_propio NUNCA puede ser celularserver**: el bug histórico era usar el número destino como número propio. Esto sobreescribía el FCM token del jefe con el del operador.
 
-7. **esFactura (frontend)**: `!!(data.nombre || data.dui || data.registro_iva || data.giro || data.concepto)`.
+7. **esFactura (Flutter y frontend web)**: `data.containsKey('nombre') || data.containsKey('dui')`.
 
 8. **SIM no expone número**: en muchos operadores de Centroamérica `TelephonyManager.getLine1Number()` devuelve null. Se usa `SubscriptionManager` como fallback. Si ambos fallan, se abre Settings para que el usuario lo vea y escriba manualmente.
 
@@ -400,4 +422,8 @@ VITE_API_URL=http://127.0.0.1:8000/api/v1
 
 10. **SnackBar foreground**: NO mostrar `cuerpo` directo (es JSON crudo). Usar `parsearCuerpoNotif(cuerpo)` y mostrar `'${p.empresa} — ${p.data['nombre']}'`.
 
-11. **NotifDetalleDialog**: widget compartido en `lib/widgets/notif_detalle_dialog.dart`. Usado tanto al tocar una notificación push como al tocar un ítem del historial. `esFactura = data.containsKey('nombre') || data.containsKey('dui')`.
+11. **NotifDetalleDialog**: widget compartido en `lib/widgets/notif_detalle_dialog.dart`. Usado tanto al tocar una notificación push como al tocar un ítem del historial.
+
+12. **Throttle endpoints públicos**: `registrar-dispositivo` = 30/min, `enviar-datos` = 30/min, `auth/login` = 10/min.
+
+13. **Credenciales admin por defecto (seeder)**: `admin@pushcliente.com` / `Admin1234!`, empresa demo registro_iva `12345-6`.
