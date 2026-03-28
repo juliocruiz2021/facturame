@@ -197,10 +197,17 @@ class _FormularioScreenState extends State<FormularioScreen> {
   }
 
   /// Al iniciar, si no hay número propio guardado, lo lee del SIM y lo guarda.
+  /// Solo lee si el permiso ya fue concedido para evitar la race condition:
+  /// requestPermissions muestra el diálogo pero retorna antes de que el usuario
+  /// responda, por lo que getPhoneNumber fallaría en el primer intento.
   Future<void> _leerYGuardarCelularPropio() async {
     if (_miCelular.isNotEmpty) return; // ya está configurado
     try {
-      await _simChannel.invokeMethod('requestPhonePermission');
+      // Solicita el permiso (si no está concedido, muestra diálogo y retorna false)
+      final granted =
+          await _simChannel.invokeMethod<bool>('requestPhonePermission') ?? false;
+      // Solo intentar leer si el permiso ya estaba concedido
+      if (!granted) return;
       final numero = await _simChannel.invokeMethod<String>('getPhoneNumber');
       if (numero != null && numero.isNotEmpty) {
         final limpio = numero
@@ -1163,17 +1170,25 @@ class _ConfigDialogState extends State<_ConfigDialog> {
 
   Future<void> _leerNumeroCelular() async {
     try {
-      // Solicitar permiso si no está otorgado
-      await _channel.invokeMethod('requestPhonePermission');
-      // Intentar leer el número
+      // Solicita permiso. Retorna true si YA estaba concedido, false si acaba
+      // de mostrar el diálogo (el usuario aún no respondió).
+      final granted =
+          await _channel.invokeMethod<bool>('requestPhonePermission') ?? false;
+      // Si el permiso no estaba concedido aún, no intentar leer (fallaría).
+      // La próxima vez que se abra la configuración, el permiso ya estará
+      // otorgado y _leerNumeroCelular lo leerá correctamente.
+      if (!granted) return;
       final numero = await _channel.invokeMethod<String>('getPhoneNumber');
       if (numero != null && numero.isNotEmpty && mounted) {
-        // Limpiar prefijo internacional si viene con +503 etc.
-        final limpio = numero.replaceAll(RegExp(r'^\+\d{1,3}'), '').replaceAll(RegExp(r'\D'), '');
-        setState(() {
-          _ctrlMiCelular.text  = limpio;
-          _numeroCelularLeido  = true;
-        });
+        final limpio = numero
+            .replaceAll(RegExp(r'^\+\d{1,3}'), '')
+            .replaceAll(RegExp(r'\D'), '');
+        if (limpio.isNotEmpty) {
+          setState(() {
+            _ctrlMiCelular.text = limpio;
+            _numeroCelularLeido = true;
+          });
+        }
       }
     } catch (_) {
       // El operador no expone el número — el campo queda editable
