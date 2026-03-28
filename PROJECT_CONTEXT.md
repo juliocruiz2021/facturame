@@ -1,140 +1,95 @@
-# Project Context — Facturame
+# Project Context - Facturame
 
-## Descripción
+## Update 2026-03-28
 
-**Facturame** es una app Android para registrar datos de clientes y enviarlos al backend `push_cliente`. En versiones anteriores enviaba los datos por WhatsApp; desde la v1.1 los envía directamente al backend vía HTTP y puede recibir notificaciones push.
+- Produccion final:
+  - Panel: `https://facturame.appsigasv.com`
+  - Backend para la app: `https://facturame.appsigasv.com`
+- La app registra cada telefono usando `celular_propio`, pero el backend ya enruta la notificacion por coincidencia global de `numero_celular`.
+- Si el mismo numero existe en varias empresas, el mismo telefono puede recibir mensajes de cualquiera de ellas.
+- La empresa y el servidor mostrados al usuario deben salir del JSON del mensaje recibido.
+- El APK release puede compilarse con defaults de produccion por `dart-define`, pero `mi_celular` conviene dejarlo vacio porque depende de cada equipo.
 
-### Despliegue actual
+## Descripcion
+
+`Facturame` es una app Android Flutter para registrar datos de clientes, enviarlos al backend `push_cliente` y recibir notificaciones push.
+
+## Despliegue actual
 
 - Panel web: `https://facturame.appsigasv.com`
 - Backend recomendado para la app: `https://facturame.appsigasv.com`
 - La web usa mismo origen y proxya `/api` hacia Laravel en el VPS.
-- El APK release final ya no necesita `usesCleartextTraffic` porque la conexiÃ³n queda sobre HTTPS.
+- El APK release final ya no necesita `usesCleartextTraffic` porque la conexion va sobre HTTPS.
 
----
+## Stack
 
-## Stack tecnológico
+- Flutter 3.41.5 / Dart 3.11.3
+- Firebase Cloud Messaging
+- `http`
+- `shared_preferences`
+- `uuid`
 
-| Capa | Tecnología |
-|---|---|
-| Framework | Flutter 3.41.5 / Dart 3.11.3 |
-| Plataforma | Android (minSdk 21 / targetSdk según flutter) |
-| Push notifications | Firebase Cloud Messaging |
-| HTTP client | `http ^1.2.2` |
-| Almacenamiento local | `shared_preferences ^2.2.2` |
-| UUID del dispositivo | `uuid ^4.5.1` |
+## Configuracion guardada en SharedPreferences
 
----
+- `backend_url`
+- `nombre_empresa`
+- `nombre_servidor`
+- `num_registro`
+- `celularserver`
+- `celular_propio`
+- `nombre_usuario`
+- `device_uuid`
 
-## Arquitectura
+## Regla critica
 
-```
-app_clientes/
-├── lib/
-│   ├── main.dart                    — Punto de entrada, UI, lógica de negocio
-│   ├── services/
-│   │   ├── firebase_service.dart    — FCM: permisos, streams, token
-│   │   └── api_service.dart         — HTTP calls al backend push_cliente
-│   └── helpers/
-│       └── device_uuid.dart         — UUID único persistente del dispositivo
-├── android/
-│   ├── app/
-│   │   ├── google-services.json     — Firebase config (requiere descarga manual)
-│   │   ├── build.gradle.kts         — Plugin google-services
-│   │   └── src/main/
-│   │       └── AndroidManifest.xml  — Permisos + canal FCM
-│   └── settings.gradle.kts          — Classpath google-services
-└── pubspec.yaml                     — Dependencias
-```
+- `celular_propio`
+  - numero de ESTE telefono
+  - se usa para registrar el dispositivo y asociar el token FCM
+- `celularserver`
+  - numero destino al que se enviaran las notificaciones
 
----
+Nunca usar `celularserver` como fallback de `celular_propio`.
 
-## Configuración en la app (SharedPreferences)
+## Flujo actual
 
-| Key | Default | Descripción |
-|---|---|---|
-| `backend_url` | `http://192.168.1.10:8000` | URL del backend push_cliente |
-| `nombre_empresa` | `EMPRESA DE PRUEBA` | Nombre de la empresa |
-| `nombre_servidor` | `SIGA1` | Identificador del servidor |
-| `num_registro` | _(vacío)_ | Registro IVA de la empresa |
-| `celularserver` | `63092051` | Número del operador destino |
-| `nombre_usuario` | `OPERADOR` | Nombre del usuario registrador |
-| `device_uuid` | _(generado)_ | UUID único del dispositivo |
+1. La app inicia y registra el dispositivo con `registro_iva`, `celular_propio`, `nombre_usuario`, `nombre_servidor`, `device_uuid` y `fcm_token`.
+2. El operador envia datos usando `numero_destino = celularserver`.
+3. El backend busca todos los dispositivos activos con ese `numero_celular`, aunque pertenezcan a otras empresas.
+4. FCM envia a todos los tokens unicos encontrados.
+5. La app receptora muestra el detalle usando `empresa` y `servidor` del JSON recibido.
+6. Al abrir el detalle, la app confirma recepcion al backend.
 
-Los defaults del instalador release también pueden inyectarse con `--dart-define` usando:
-`APP_DEFAULT_BACKEND_URL`, `APP_DEFAULT_NOMBRE_EMPRESA`, `APP_DEFAULT_NUM_REGISTRO`,
-`APP_DEFAULT_NOMBRE_SERVIDOR`, `APP_DEFAULT_CELULAR_DESTINO`, `APP_DEFAULT_NOMBRE_USUARIO`.
+## Endpoints usados por la app
 
----
+- `POST /api/v1/clientes/registrar-dispositivo`
+- `POST /api/v1/clientes/enviar-datos`
+- `POST /api/v1/clientes/confirmar-recepcion`
+- `POST /api/v1/clientes-compartidos/sync`
+- `GET /api/v1/clientes-compartidos`
 
-## Endpoints del backend usados
+## Archivos clave
 
-| Endpoint | Auth | Cuándo |
-|---|---|---|
-| `POST /api/v1/clientes/registrar-dispositivo` | Público | Al iniciar la app |
-| `POST /api/v1/clientes/enviar-datos` | Público | Al enviar datos del cliente |
-| `POST /api/v1/clientes/confirmar-recepcion` | Público | Al abrir el detalle de una notificación |
-| `POST /api/v1/clientes-compartidos/sync` | Público | Al iniciar, reanudar y guardar clientes |
+- `lib/main.dart`
+- `lib/services/api_service.dart`
+- `lib/services/firebase_service.dart`
+- `lib/services/recepcion_service.dart`
+- `lib/screens/notificaciones_screen.dart`
+- `lib/widgets/notif_detalle_dialog.dart`
+- `lib/helpers/device_uuid.dart`
+- `lib/config/app_defaults.dart`
 
----
+## APK release
 
-## Flujo principal
+El script de release vive en:
 
-```
-1. Inicio
-   ├─► Cargar configuración (SharedPreferences)
-   ├─► Firebase.initializeApp()
-   └─► _inicializarPush()
-         ├─► FirebaseService.initialize()
-         ├─► Suscribir a onForegroundMessage → SnackBar azul
-         ├─► Suscribir a onNotificationTap → preparado para nav futura
-         ├─► DeviceUuid.getOrCreate()
-         └─► ApiService.registrarDispositivo(...)
+- `scripts/build_release.ps1`
 
-2. Registro de cliente
-   ├─► Usuario llena formulario
-   ├─► Diálogo de confirmación
-   └─► ApiService.enviarDatos(registro_iva, numero_destino, titulo, cuerpo)
-         ├─► Éxito → SnackBar verde → ¿Nuevo cliente?
-         └─► Error → SnackBar rojo
+Valores de produccion recomendados:
 
-3. Recepción de push
-   ├─► Foreground → SnackBar azul con título y cuerpo
-   ├─► Background → Notificación del sistema (automática)
-   └─► Tap → diálogo de detalle + confirmación de recepción al backend
-```
-
----
-
-## Campos del formulario
-
-| Campo | Obligatorio | Mayúsculas |
-|---|---|---|
-| Nombres del cliente | Sí | Sí |
-| DUI | No | — |
-| Registro IVA | No | Sí |
-| Giro | No | Sí |
-| Dirección | Sí | Sí |
-| Celular | No | — |
-| Email | No | — |
-| Concepto | Sí | Sí |
-| Monto | Sí | — |
-
----
-
-## Historial de versiones
-
-| Versión | Descripción |
-|---|---|
-| 1.0.0+1 | Envío por WhatsApp (`url_launcher`) |
-| 1.1.0+2 | Reemplazo WhatsApp → HTTP POST + FCM básico |
-| 1.1.0+2* | FCM completo: streams foreground/tap, `FirebaseService`, `DeviceUuid` |
-| 1.1.0+2** | Confirmación de recepción + sincronización compartida de clientes |
-
----
-
-## Pendiente
-
-- [ ] Múltiples destinos desde la app móvil
-- [ ] Modo offline con cola de reintentos
-- [ ] Seguir modularizando `main.dart`
+- `APP_DEFAULT_BACKEND_URL=https://facturame.appsigasv.com`
+- `APP_DEFAULT_NOMBRE_EMPRESA=EMPRESA DE PRUEBA`
+- `APP_DEFAULT_NUM_REGISTRO=12345-6`
+- `APP_DEFAULT_NOMBRE_SERVIDOR=SIGA1`
+- `APP_DEFAULT_CELULAR_DESTINO=63092051`
+- `APP_DEFAULT_NOMBRE_USUARIO=OPERADOR`
+- `APP_DEFAULT_MI_CELULAR=` vacio
